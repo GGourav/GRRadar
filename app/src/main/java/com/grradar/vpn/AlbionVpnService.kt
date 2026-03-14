@@ -13,7 +13,10 @@ import android.os.Build
 import android.os.ParcelFileDescriptor
 import com.grradar.MainActivity
 import com.grradar.R
+import com.grradar.data.IdMapRepository
 import com.grradar.logger.DiscoveryLogger
+import com.grradar.parser.EventDispatcher
+import com.grradar.parser.PhotonParser
 import kotlinx.coroutines.*
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -24,15 +27,6 @@ import java.nio.channels.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
-/**
- * AlbionVpnService — VPN with full packet relay
- *
- * Architecture:
- *   TUN read loop → parse raw IP packets from Albion only
- *     UDP port 5056  → NIO DatagramChannel (protected) + Photon parser
- *     TCP (any port) → NIO SocketChannel (protected) relay (login/HTTPS)
- *   Selector loop    → incoming responses → write back to TUN
- */
 class AlbionVpnService : VpnService() {
 
     companion object {
@@ -44,14 +38,12 @@ class AlbionVpnService : VpnService() {
         private const val CHANNEL_ID = "grradar_vpn_channel"
         private const val NOTIFICATION_ID = 1001
 
-        // VPN Configuration
         private const val MTU = 32767
         private const val TUN_IP = "10.8.0.2"
         private const val TUN_PREFIX = 32
         private const val ALBION_PACKAGE = "com.albiononline"
         private const val ALBION_PORT = 5056
 
-        // Statistics
         val packetCount = AtomicLong(0)
         val albionCount = AtomicLong(0)
 
@@ -74,6 +66,7 @@ class AlbionVpnService : VpnService() {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val udpMap = ConcurrentHashMap<Int, UdpEntry>()
     private val tcpMap = ConcurrentHashMap<Int, TcpEntry>()
+    private lateinit var eventDispatcher: EventDispatcher
 
     private val stopReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -81,14 +74,19 @@ class AlbionVpnService : VpnService() {
         }
     }
 
-    // ─── Lifecycle ────────────────────────────────────────────────────────────
-
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
 
         DiscoveryLogger.start(this)
         DiscoveryLogger.i("AlbionVpnService created")
+
+        // Initialize IdMapRepository
+        IdMapRepository.init(this)
+
+        // Initialize EventDispatcher
+        eventDispatcher = EventDispatcher()
+        PhotonParser.init(eventDispatcher)
 
         val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             RECEIVER_NOT_EXPORTED
@@ -140,8 +138,6 @@ class AlbionVpnService : VpnService() {
         stopSelf()
     }
 
-    // ─── Notification ─────────────────────────────────────────────────────────
-
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
             CHANNEL_ID,
@@ -174,8 +170,6 @@ class AlbionVpnService : VpnService() {
         val notificationManager = getSystemService(NotificationManager::class.java)
         notificationManager.notify(NOTIFICATION_ID, createNotification(text))
     }
-
-    // ─── TUN Setup ────────────────────────────────────────────────────────────
 
     private suspend fun runCapture() {
         val pfd = withContext(Dispatchers.IO) {
@@ -224,8 +218,6 @@ class AlbionVpnService : VpnService() {
         sendBroadcast(intent)
     }
 
-    // ─── TUN Read Loop ─────────────────────────────────────────────────────────
-
     private suspend fun runTunReadLoop(pfd: ParcelFileDescriptor) =
         withContext(Dispatchers.IO) {
             val input = FileInputStream(pfd.fileDescriptor)
@@ -236,7 +228,6 @@ class AlbionVpnService : VpnService() {
                     val len = input.read(buf).takeIf { it > 20 } ?: continue
                     packetCount.incrementAndGet()
 
-                    // IPv4 only
                     if ((buf[0].toInt() and 0xF0) != 0x40) continue
 
                     val ihl = (buf[0].toInt() and 0x0F) * 4
@@ -259,8 +250,6 @@ class AlbionVpnService : VpnService() {
             }
         }
 
-    // ─── UDP Handler (NIO DatagramChannel) ────────────────────────────────────
-
     private fun handleUdp(
         buf: ByteArray, len: Int, ihl: Int,
         srcIp: ByteArray, dstIp: ByteArray
@@ -272,18 +261,16 @@ class AlbionVpnService : VpnService() {
 
         if (payLen <= 0) return
 
-        // Parse Photon on Albion UDP traffic
         if (dstPort == ALBION_PORT || srcPort == ALBION_PORT) {
             albionCount.incrementAndGet()
             parsePhoton(buf, payOff, payLen)
             updateNotification("PKT ${packetCount.get()} | ALB ${albionCount.get()} | ENT $entityCount")
         }
 
-        // Create or reuse protected DatagramChannel keyed by source port
         val entry = udpMap.getOrPut(srcPort) {
             runCatching {
                 val ch = DatagramChannel.open()
-                protect(ch.socket()) // protect BEFORE connect
+                protect(ch.socket())
                 ch.configureBlocking(false)
                 ch.connect(InetSocketAddress(
                     java.net.InetAddress.getByAddress(dstIp), dstPort
@@ -291,21 +278,16 @@ class AlbionVpnService : VpnService() {
                 val e = UdpEntry(ch, srcIp.copyOf(), srcPort, dstPort)
                 selector?.wakeup()
                 ch.register(selector, SelectionKey.OP_READ, e)
-                DiscoveryLogger.d("UDP channel created: $srcPort -> $dstPort")
                 e
             }.getOrElse { return }
         }
 
-        // Forward payload to real server
         runCatching {
             entry.channel.write(ByteBuffer.wrap(buf, payOff, payLen))
         }.onFailure {
-            DiscoveryLogger.w("UDP write failed: ${it.message}")
             udpMap.remove(srcPort)?.channel?.runCatching { close() }
         }
     }
-
-    // ─── TCP Handler (NIO SocketChannel) ──────────────────────────────────────
 
     private fun handleTcp(
         buf: ByteArray, len: Int, ihl: Int,
@@ -351,7 +333,7 @@ class AlbionVpnService : VpnService() {
         runCatching {
             val ch = SocketChannel.open()
             ch.configureBlocking(false)
-            protect(ch.socket()) // protect BEFORE connect
+            protect(ch.socket())
 
             val entry = TcpEntry(ch, srcIp.copyOf(), srcPort, dstPort)
             tcpMap[srcPort] = entry
@@ -361,15 +343,10 @@ class AlbionVpnService : VpnService() {
             ))
             selector?.wakeup()
             ch.register(selector, SelectionKey.OP_CONNECT, entry)
-
-            DiscoveryLogger.d("TCP channel created: $srcPort -> $dstPort")
         }.onFailure {
-            DiscoveryLogger.w("TCP open failed: ${it.message}")
             tcpMap.remove(srcPort)
         }
     }
-
-    // ─── NIO Selector Loop ────────────────────────────────────────────────────
 
     private fun runSelectorLoop() {
         val sel = selector ?: return
@@ -410,12 +387,10 @@ class AlbionVpnService : VpnService() {
         try {
             if (entry.channel.finishConnect()) {
                 key.interestOps(SelectionKey.OP_READ)
-                DiscoveryLogger.d("TCP connected: ${entry.srcPort}")
             } else {
                 tcpMap.remove(entry.srcPort)?.close()
             }
         } catch (e: Exception) {
-            DiscoveryLogger.w("TCP connect failed: ${e.message}")
             tcpMap.remove(entry.srcPort)?.close()
         }
     }
@@ -429,14 +404,12 @@ class AlbionVpnService : VpnService() {
             buf.flip()
             val payload = ByteArray(n).also { buf.get(it) }
 
-            // Server→client Albion packets: parse Photon here
             if (entry.dstPort == ALBION_PORT && n >= 12) {
                 albionCount.incrementAndGet()
                 parsePhoton(payload, 0, n)
                 updateNotification("PKT ${packetCount.get()} | ALB ${albionCount.get()} | ENT $entityCount")
             }
 
-            // Write response back to TUN
             val serverIp = (entry.channel.remoteAddress as? InetSocketAddress)
                 ?.address?.address ?: return
 
@@ -475,12 +448,9 @@ class AlbionVpnService : VpnService() {
 
             synchronized(this) { tunOut?.write(pkt) }
         } catch (e: Exception) {
-            DiscoveryLogger.v("TCP read: ${e.message}")
             tcpMap.remove(entry.srcPort)?.close()
         }
     }
-
-    // ─── Packet Builders ──────────────────────────────────────────────────────
 
     private fun buildUdpPacket(
         srcIp: ByteArray, dstIp: ByteArray,
@@ -490,14 +460,13 @@ class AlbionVpnService : VpnService() {
         val ipLen = 20 + udpLen
         val b = ByteBuffer.allocate(ipLen).order(ByteOrder.BIG_ENDIAN)
 
-        // IP header
         b.put(0x45.toByte())
         b.put(0)
         b.putShort(ipLen.toShort())
         b.putShort(0)
         b.putShort(0x4000.toShort())
         b.put(64)
-        b.put(17) // UDP
+        b.put(17)
         val csumPos = b.position()
         b.putShort(0)
         b.put(srcIp)
@@ -508,11 +477,10 @@ class AlbionVpnService : VpnService() {
         arr[csumPos] = (cs shr 8).toByte()
         arr[csumPos + 1] = cs.toByte()
 
-        // UDP header
         b.putShort(srcPort.toShort())
         b.putShort(dstPort.toShort())
         b.putShort(udpLen.toShort())
-        b.putShort(0) // checksum disabled
+        b.putShort(0)
         b.put(payload)
 
         return arr
@@ -526,14 +494,13 @@ class AlbionVpnService : VpnService() {
         val ipLen = 20 + tcpLen
         val b = ByteBuffer.allocate(ipLen).order(ByteOrder.BIG_ENDIAN)
 
-        // IP header
         b.put(0x45.toByte())
         b.put(0)
         b.putShort(ipLen.toShort())
         b.putShort(0)
         b.putShort(0x4000.toShort())
         b.put(64)
-        b.put(6) // TCP
+        b.put(6)
         val ipCsumPos = b.position()
         b.putShort(0)
         b.put(srcIp)
@@ -544,16 +511,15 @@ class AlbionVpnService : VpnService() {
         arr[ipCsumPos] = (ipCs shr 8).toByte()
         arr[ipCsumPos + 1] = ipCs.toByte()
 
-        // TCP header (PSH+ACK)
         b.putShort(srcPort.toShort())
         b.putShort(dstPort.toShort())
-        b.putInt(1) // seq
-        b.putInt(1) // ack
-        b.put(0x50.toByte()) // data offset = 5
-        b.put(0x18.toByte()) // PSH+ACK
-        b.putShort(65535.toShort()) // window
-        b.putShort(0) // checksum
-        b.putShort(0) // urgent
+        b.putInt(1)
+        b.putInt(1)
+        b.put(0x50.toByte())
+        b.put(0x18.toByte())
+        b.putShort(65535.toShort())
+        b.putShort(0)
+        b.putShort(0)
         b.put(payload)
 
         return arr
@@ -575,17 +541,16 @@ class AlbionVpnService : VpnService() {
         return sum.inv().toInt() and 0xFFFF
     }
 
-    // ─── Photon Parser Stub ───────────────────────────────────────────────────
-
     private fun parsePhoton(buf: ByteArray, off: Int, len: Int) {
-        // TODO: Implement in Step 4
-        // For now just log occasionally
-        if (albionCount.get() % 100 == 0L) {
-            DiscoveryLogger.d("Photon packet: $len bytes (parser coming in Step 4)")
+        try {
+            val payload = if (off == 0 && len == buf.size) buf
+                          else buf.copyOfRange(off, off + len)
+            val events = PhotonParser.parse(payload, len)
+            PhotonParser.dispatchEvents(events)
+        } catch (e: Exception) {
+            DiscoveryLogger.v("Photon parse: ${e.message}")
         }
     }
-
-    // ─── Data Classes ─────────────────────────────────────────────────────────
 
     private data class UdpEntry(
         val channel: DatagramChannel,
@@ -604,6 +569,5 @@ class AlbionVpnService : VpnService() {
     }
 }
 
-// Extension function for reading unsigned 16-bit
 private fun ByteArray.u16(off: Int): Int =
     ((this[off].toInt() and 0xFF) shl 8) or (this[off + 1].toInt() and 0xFF)
