@@ -14,18 +14,15 @@ import com.grradar.vpn.AlbionVpnService
 
 class MainActivity : AppCompatActivity() {
 
-    // Request codes
     private val REQUEST_OVERLAY_PERMISSION = 1001
     private val REQUEST_VPN_PERMISSION = 1002
 
-    // UI elements
     private lateinit var tvStatus: TextView
     private lateinit var tvOverlayStatus: TextView
     private lateinit var tvVpnStatus: TextView
     private lateinit var btnStart: Button
     private lateinit var btnStop: Button
 
-    // Service state
     private var isRadarRunning = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -58,12 +55,10 @@ class MainActivity : AppCompatActivity() {
             stopRadar()
         }
 
-        // Request overlay permission button
         findViewById<Button>(R.id.btn_request_overlay).setOnClickListener {
             requestOverlayPermission()
         }
 
-        // Request VPN permission button
         findViewById<Button>(R.id.btn_request_vpn).setOnClickListener {
             requestVpnPermission()
         }
@@ -164,13 +159,11 @@ class MainActivity : AppCompatActivity() {
     private fun startRadar() {
         if (!checkAllPermissions()) return
 
-        // Start VPN service
         val vpnIntent = Intent(this, AlbionVpnService::class.java).apply {
             action = AlbionVpnService.ACTION_START
         }
         startService(vpnIntent)
 
-        // Start overlay service
         val overlayIntent = Intent(this, RadarOverlayService::class.java).apply {
             action = RadarOverlayService.ACTION_START
         }
@@ -185,13 +178,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun stopRadar() {
-        // Stop VPN service
         val vpnIntent = Intent(this, AlbionVpnService::class.java).apply {
             action = AlbionVpnService.ACTION_STOP
         }
         startService(vpnIntent)
 
-        // Stop overlay service
         val overlayIntent = Intent(this, RadarOverlayService::class.java).apply {
             action = RadarOverlayService.ACTION_STOP
         }
