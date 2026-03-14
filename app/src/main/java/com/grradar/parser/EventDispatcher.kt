@@ -3,6 +3,7 @@ package com.grradar.parser
 import android.util.Log
 import com.grradar.data.EntityStore
 import com.grradar.data.IdMapRepository
+import com.grradar.logger.DiscoveryLogger
 import com.grradar.model.*
 
 /**
@@ -26,6 +27,7 @@ class EventDispatcher(
         
         override fun onError(error: String) {
             Log.e(TAG, "Photon error: $error")
+            DiscoveryLogger.e("Photon error: $error")
         }
     })
     
@@ -74,6 +76,9 @@ class EventDispatcher(
     private fun dispatchEvent(eventName: String, params: Map<Int, Any?>) {
         Log.d(TAG, "Dispatching: $eventName with ${params.size} params")
         
+        // LOG ALL EVENTS TO DISCOVERY LOGGER FOR DEBUGGING
+        DiscoveryLogger.logEvent(eventName, params)
+        
         when (eventName) {
             Events.JOIN_FINISHED -> handleJoinFinished(params)
             Events.NEW_CHARACTER -> handleNewCharacter(params)
@@ -109,6 +114,8 @@ class EventDispatcher(
         val posX = parser.getFloat(params, keys.posXKey)
         val posY = parser.getFloat(params, keys.posYKey)
         
+        Log.i(TAG, "JoinFinished: objectId=$objectId, pos=($posX, $posY)")
+        
         // Fallback: Scan for coordinates if key lookup fails
         if (posX == 0f && posY == 0f) {
             val planB = idMapRepo.getCoordinatePlanB()
@@ -119,14 +126,13 @@ class EventDispatcher(
             )
             if (coords != null) {
                 entityStore.setLocalPlayerPosition(coords.first, coords.second)
+                Log.i(TAG, "JoinFinished PlanB: pos=(${coords.first}, ${coords.second})")
             }
         } else {
             entityStore.setLocalPlayerPosition(posX, posY)
         }
         
         entityStore.setLocalPlayerId(objectId)
-        
-        Log.i(TAG, "JoinFinished: localPlayerId=$objectId, pos=($posX, $posY)")
     }
     
     /**
@@ -137,18 +143,29 @@ class EventDispatcher(
         val playerKeys = idMapRepo.getPlayerKeys()
         
         val objectId = parser.getInt(params, commonKeys.objectIdKey)
-        val posX = parser.getFloat(params, commonKeys.posXKey)
-        val posY = parser.getFloat(params, commonKeys.posYKey)
+        var posX = parser.getFloat(params, commonKeys.posXKey)
+        var posY = parser.getFloat(params, commonKeys.posYKey)
         val name = parser.getString(params, playerKeys.nameKey)
         val guild = parser.getString(params, playerKeys.guildKey)
         val alliance = parser.getString(params, playerKeys.allianceKey)
         val factionFlagValue = parser.getInt(params, playerKeys.factionFlagKey)
         val health = parser.getFloat(params, playerKeys.healthKey, 1.0f)
         
+        // Plan B: Scan for coordinates
+        if (posX == 0f && posY == 0f) {
+            val planB = idMapRepo.getCoordinatePlanB()
+            val coords = parser.scanForCoordinates(params, planB.minValid.toFloat(), planB.maxValid.toFloat())
+            if (coords != null) {
+                posX = coords.first
+                posY = coords.second
+            }
+        }
+        
         // Check if this is the local player
         val localPlayerId = entityStore.getLocalPlayerId()
         if (objectId == localPlayerId) {
             entityStore.setLocalPlayerPosition(posX, posY)
+            Log.d(TAG, "NewCharacter (local): $name at ($posX, $posY)")
             return
         }
         
@@ -172,7 +189,7 @@ class EventDispatcher(
         )
         
         entityStore.putEntity(entity)
-        Log.d(TAG, "NewCharacter: $name (id=$objectId, hostile=$isHostile)")
+        Log.d(TAG, "NewCharacter: $name (id=$objectId, hostile=$isHostile, pos=$posX,$posY)")
     }
     
     /**
@@ -183,68 +200,56 @@ class EventDispatcher(
         val mobKeys = idMapRepo.getMobKeys()
         
         val objectId = parser.getInt(params, commonKeys.objectIdKey)
-        val posX = parser.getFloat(params, commonKeys.posXKey)
-        val posY = parser.getFloat(params, commonKeys.posYKey)
-        val typeName = parser.getString(params, mobKeys.typeNameKey)
-        val tier = parser.getInt(params, mobKeys.tierKey)
+        var posX = parser.getFloat(params, commonKeys.posXKey)
+        var posY = parser.getFloat(params, commonKeys.posYKey)
+        var typeName = parser.getString(params, mobKeys.typeNameKey)
+        var tier = parser.getInt(params, mobKeys.tierKey)
         val enchantValue = parser.getInt(params, mobKeys.enchantKey)
         val isBoss = parser.getBoolean(params, mobKeys.isBossKey)
         val health = parser.getFloat(params, mobKeys.healthKey, 1.0f)
         
         // Plan B: Scan for tier prefix if typeName not found
-        val actualTypeName = if (typeName.isEmpty()) {
+        typeName = if (typeName.isEmpty()) {
             parser.scanForTierPrefix(params) ?: ""
         } else {
             typeName
         }
         
-        // Plan B: Scan for coordinates if pos not found
-        var actualX = posX
-        var actualY = posY
+        // Plan B: Scan for coordinates
         if (posX == 0f && posY == 0f) {
             val planB = idMapRepo.getCoordinatePlanB()
-            val coords = parser.scanForCoordinates(
-                params,
-                planB.minValid.toFloat(),
-                planB.maxValid.toFloat()
-            )
+            val coords = parser.scanForCoordinates(params, planB.minValid.toFloat(), planB.maxValid.toFloat())
             if (coords != null) {
-                actualX = coords.first
-                actualY = coords.second
+                posX = coords.first
+                posY = coords.second
             }
         }
         
-        // Extract tier and enchantment from typeName
-        val actualTier = if (tier > 0) tier else idMapRepo.extractTier(actualTypeName)
-        val actualEnchant = if (enchantValue > 0) {
-            Enchantment.fromInt(enchantValue)
-        } else {
-            idMapRepo.extractEnchantment(actualTypeName)
-        }
+        // Extract tier and enchantment
+        tier = if (tier > 0) tier else idMapRepo.extractTier(typeName)
+        val enchant = if (enchantValue > 0) Enchantment.fromInt(enchantValue) else idMapRepo.extractEnchantment(typeName)
         
-        // Classify entity type
-        val entityType = idMapRepo.classifyEntity(actualTypeName)
-        val mobCategory = idMapRepo.getMobCategory(actualTypeName)
+        // Classify entity
+        val entityType = idMapRepo.classifyEntity(typeName)
+        val mobCategory = idMapRepo.getMobCategory(typeName)
         
         val entity = RadarEntity(
             id = objectId,
             type = entityType,
-            worldX = actualX,
-            worldY = actualY,
-            typeName = actualTypeName,
-            tier = actualTier,
-            enchantment = actualEnchant,
+            worldX = posX,
+            worldY = posY,
+            typeName = typeName,
+            tier = tier,
+            enchantment = enchant,
             health = health,
-            isBoss = isBoss || entityType == EntityType.BOSS || 
-                     entityType == EntityType.VETERAN_BOSS || 
-                     entityType == EntityType.MINIBOSS,
+            isBoss = isBoss || entityType == EntityType.BOSS || entityType == EntityType.VETERAN_BOSS || entityType == EntityType.MINIBOSS,
             isVeteran = entityType == EntityType.VETERAN_BOSS,
             isElite = entityType == EntityType.ELITE_MOB,
             mobCategory = mobCategory
         )
         
         entityStore.putEntity(entity)
-        Log.d(TAG, "NewMob: $actualTypeName (id=$objectId, type=$entityType, tier=$actualTier)")
+        Log.d(TAG, "NewMob: $typeName (id=$objectId, type=$entityType, pos=$posX,$posY)")
     }
     
     /**
@@ -255,328 +260,181 @@ class EventDispatcher(
         val harvestKeys = idMapRepo.getHarvestableKeys()
         
         val objectId = parser.getInt(params, commonKeys.objectIdKey)
-        val posX = parser.getFloat(params, commonKeys.posXKey)
-        val posY = parser.getFloat(params, commonKeys.posYKey)
-        val typeName = parser.getString(params, harvestKeys.typeNameKey)
-        val tier = parser.getInt(params, harvestKeys.tierKey)
+        var posX = parser.getFloat(params, commonKeys.posXKey)
+        var posY = parser.getFloat(params, commonKeys.posYKey)
+        var typeName = parser.getString(params, harvestKeys.typeNameKey)
+        var tier = parser.getInt(params, harvestKeys.tierKey)
         val enchantValue = parser.getInt(params, harvestKeys.enchantKey)
         
         // Plan B: Scan for tier prefix
-        val actualTypeName = if (typeName.isEmpty()) {
+        typeName = if (typeName.isEmpty()) {
             parser.scanForTierPrefix(params) ?: ""
         } else {
             typeName
         }
         
         // Plan B: Scan for coordinates
-        var actualX = posX
-        var actualY = posY
         if (posX == 0f && posY == 0f) {
             val planB = idMapRepo.getCoordinatePlanB()
-            val coords = parser.scanForCoordinates(
-                params,
-                planB.minValid.toFloat(),
-                planB.maxValid.toFloat()
-            )
+            val coords = parser.scanForCoordinates(params, planB.minValid.toFloat(), planB.maxValid.toFloat())
             if (coords != null) {
-                actualX = coords.first
-                actualY = coords.second
+                posX = coords.first
+                posY = coords.second
             }
         }
         
-        // Extract tier and enchantment
-        val actualTier = if (tier > 0) tier else idMapRepo.extractTier(actualTypeName)
-        val actualEnchant = if (enchantValue > 0) {
-            Enchantment.fromInt(enchantValue)
-        } else {
-            idMapRepo.extractEnchantment(actualTypeName)
-        }
-        
-        // Classify resource type
-        val entityType = idMapRepo.classifyEntity(actualTypeName)
+        tier = if (tier > 0) tier else idMapRepo.extractTier(typeName)
+        val enchant = if (enchantValue > 0) Enchantment.fromInt(enchantValue) else idMapRepo.extractEnchantment(typeName)
+        val entityType = idMapRepo.classifyEntity(typeName)
         
         val entity = RadarEntity(
             id = objectId,
             type = entityType,
-            worldX = actualX,
-            worldY = actualY,
-            typeName = actualTypeName,
-            tier = actualTier,
-            enchantment = actualEnchant,
+            worldX = posX,
+            worldY = posY,
+            typeName = typeName,
+            tier = tier,
+            enchantment = enchant,
             mobCategory = MobCategory.HARVESTABLE
         )
         
         entityStore.putEntity(entity)
-        Log.d(TAG, "Harvestable: $actualTypeName (id=$objectId, tier=$actualTier, enchant=$actualEnchant)")
+        Log.d(TAG, "Harvestable: $typeName (id=$objectId, tier=$tier, pos=$posX,$posY)")
     }
     
-    /**
-     * Handle batch harvestable list
-     */
     private fun handleHarvestableList(params: Map<Int, Any?>) {
         val harvestKeys = idMapRepo.getHarvestableKeys()
         val list = parser.getList(params, harvestKeys.listKey)
         
         if (list != null) {
-            @Suppress("UNCHECKED_CAST")
             for (item in list) {
                 if (item is Map<*, *>) {
                     @Suppress("UNCHECKED_CAST")
-                    val itemParams = item as Map<Int, Any?>
-                    handleNewHarvestable(itemParams)
+                    handleNewHarvestable(item as Map<Int, Any?>)
                 }
             }
         }
     }
     
-    /**
-     * Handle Silver spawn
-     */
     private fun handleSilver(params: Map<Int, Any?>) {
         val commonKeys = idMapRepo.getCommonKeys()
-        
         val objectId = parser.getInt(params, commonKeys.objectIdKey)
         val posX = parser.getFloat(params, commonKeys.posXKey)
         val posY = parser.getFloat(params, commonKeys.posYKey)
         
-        val entity = RadarEntity(
-            id = objectId,
-            type = EntityType.SILVER,
-            worldX = posX,
-            worldY = posY,
-            typeName = "SILVER"
-        )
-        
-        entityStore.putEntity(entity)
+        entityStore.putEntity(RadarEntity(id = objectId, type = EntityType.SILVER, worldX = posX, worldY = posY, typeName = "SILVER"))
     }
     
-    /**
-     * Handle Mists Caged Wisp
-     */
     private fun handleMistsCagedWisp(params: Map<Int, Any?>) {
         val commonKeys = idMapRepo.getCommonKeys()
-        
         val objectId = parser.getInt(params, commonKeys.objectIdKey)
         val posX = parser.getFloat(params, commonKeys.posXKey)
         val posY = parser.getFloat(params, commonKeys.posYKey)
         
-        val entity = RadarEntity(
-            id = objectId,
-            type = EntityType.CAGED_WISP,
-            worldX = posX,
-            worldY = posY,
-            typeName = "MISTS_CAGED_WISP"
-        )
-        
-        entityStore.putEntity(entity)
-        Log.d(TAG, "Caged Wisp at ($posX, $posY)")
+        entityStore.putEntity(RadarEntity(id = objectId, type = EntityType.CAGED_WISP, worldX = posX, worldY = posY, typeName = "CAGED_WISP"))
     }
     
-    /**
-     * Handle Mists Wisp Spawn
-     */
     private fun handleMistsWispSpawn(params: Map<Int, Any?>) {
         val commonKeys = idMapRepo.getCommonKeys()
-        
         val objectId = parser.getInt(params, commonKeys.objectIdKey)
         val posX = parser.getFloat(params, commonKeys.posXKey)
         val posY = parser.getFloat(params, commonKeys.posYKey)
         
-        val entity = RadarEntity(
-            id = objectId,
-            type = EntityType.MIST_WISP,
-            worldX = posX,
-            worldY = posY,
-            typeName = "MISTS_WISP_SPAWN"
-        )
-        
-        entityStore.putEntity(entity)
+        entityStore.putEntity(RadarEntity(id = objectId, type = EntityType.MIST_WISP, worldX = posX, worldY = posY, typeName = "MIST_WISP"))
     }
     
-    /**
-     * Handle Loot Chest
-     */
     private fun handleLootChest(params: Map<Int, Any?>) {
         val commonKeys = idMapRepo.getCommonKeys()
-        
         val objectId = parser.getInt(params, commonKeys.objectIdKey)
         val posX = parser.getFloat(params, commonKeys.posXKey)
         val posY = parser.getFloat(params, commonKeys.posYKey)
         
-        val entity = RadarEntity(
-            id = objectId,
-            type = EntityType.TREASURE_CHEST,
-            worldX = posX,
-            worldY = posY,
-            typeName = "LOOT_CHEST"
-        )
-        
-        entityStore.putEntity(entity)
+        entityStore.putEntity(RadarEntity(id = objectId, type = EntityType.TREASURE_CHEST, worldX = posX, worldY = posY, typeName = "LOOT_CHEST"))
     }
     
-    /**
-     * Handle Treasure Chest
-     */
     private fun handleTreasureChest(params: Map<Int, Any?>) {
         val commonKeys = idMapRepo.getCommonKeys()
-        
         val objectId = parser.getInt(params, commonKeys.objectIdKey)
         val posX = parser.getFloat(params, commonKeys.posXKey)
         val posY = parser.getFloat(params, commonKeys.posYKey)
         
-        val entity = RadarEntity(
-            id = objectId,
-            type = EntityType.TREASURE_CHEST,
-            worldX = posX,
-            worldY = posY,
-            typeName = "TREASURE_CHEST"
-        )
-        
-        entityStore.putEntity(entity)
+        entityStore.putEntity(RadarEntity(id = objectId, type = EntityType.TREASURE_CHEST, worldX = posX, worldY = posY, typeName = "TREASURE_CHEST"))
     }
     
-    /**
-     * Handle Dungeon Portal
-     */
     private fun handleDungeonPortal(params: Map<Int, Any?>) {
         val commonKeys = idMapRepo.getCommonKeys()
-        
         val objectId = parser.getInt(params, commonKeys.objectIdKey)
         val posX = parser.getFloat(params, commonKeys.posXKey)
         val posY = parser.getFloat(params, commonKeys.posYKey)
         
-        val entity = RadarEntity(
-            id = objectId,
-            type = EntityType.DUNGEON_PORTAL,
-            worldX = posX,
-            worldY = posY,
-            typeName = "DUNGEON_PORTAL"
-        )
-        
-        entityStore.putEntity(entity)
+        entityStore.putEntity(RadarEntity(id = objectId, type = EntityType.DUNGEON_PORTAL, worldX = posX, worldY = posY, typeName = "DUNGEON_PORTAL"))
     }
     
-    /**
-     * Handle Mist Dungeon Exit
-     */
     private fun handleMistDungeonExit(params: Map<Int, Any?>) {
         val commonKeys = idMapRepo.getCommonKeys()
-        
         val objectId = parser.getInt(params, commonKeys.objectIdKey)
         val posX = parser.getFloat(params, commonKeys.posXKey)
         val posY = parser.getFloat(params, commonKeys.posYKey)
         
-        val entity = RadarEntity(
-            id = objectId,
-            type = EntityType.DUNGEON_PORTAL,
-            worldX = posX,
-            worldY = posY,
-            typeName = "MISTS_DUNGEON_EXIT"
-        )
-        
-        entityStore.putEntity(entity)
+        entityStore.putEntity(RadarEntity(id = objectId, type = EntityType.DUNGEON_PORTAL, worldX = posX, worldY = posY, typeName = "MISTS_DUNGEON_EXIT"))
     }
     
-    /**
-     * Handle Hellgate Portal
-     */
     private fun handleHellgatePortal(params: Map<Int, Any?>) {
         val commonKeys = idMapRepo.getCommonKeys()
-        
         val objectId = parser.getInt(params, commonKeys.objectIdKey)
         val posX = parser.getFloat(params, commonKeys.posXKey)
         val posY = parser.getFloat(params, commonKeys.posYKey)
         
-        val entity = RadarEntity(
-            id = objectId,
-            type = EntityType.HELLGATE,
-            worldX = posX,
-            worldY = posY,
-            typeName = "HELLGATE_PORTAL"
-        )
-        
-        entityStore.putEntity(entity)
+        entityStore.putEntity(RadarEntity(id = objectId, type = EntityType.HELLGATE, worldX = posX, worldY = posY, typeName = "HELLGATE_PORTAL"))
     }
     
-    /**
-     * Handle Leave - Entity despawn
-     */
     private fun handleLeave(params: Map<Int, Any?>) {
         val commonKeys = idMapRepo.getCommonKeys()
         val objectId = parser.getInt(params, commonKeys.objectIdKey)
-        
         entityStore.removeEntity(objectId)
         Log.d(TAG, "Entity left: $objectId")
     }
     
-    /**
-     * Handle Move - Entity position update
-     */
     private fun handleMove(params: Map<Int, Any?>) {
         val commonKeys = idMapRepo.getCommonKeys()
-        
         val objectId = parser.getInt(params, commonKeys.objectIdKey)
         val posX = parser.getFloat(params, commonKeys.posXKey)
         val posY = parser.getFloat(params, commonKeys.posYKey)
         
-        // Check if this is the local player
         val localPlayerId = entityStore.getLocalPlayerId()
         if (objectId == localPlayerId) {
             entityStore.setLocalPlayerPosition(posX, posY)
             return
         }
         
-        // Update existing entity
         val existing = entityStore.getEntity(objectId)
         if (existing != null) {
-            val updated = existing.copy(
-                worldX = posX,
-                worldY = posY
-            )
-            entityStore.putEntity(updated)
+            entityStore.putEntity(existing.copy(worldX = posX, worldY = posY))
         }
     }
     
-    /**
-     * Handle HarvestFinished - Resource depleted
-     */
     private fun handleHarvestFinished(params: Map<Int, Any?>) {
         val commonKeys = idMapRepo.getCommonKeys()
         val objectId = parser.getInt(params, commonKeys.objectIdKey)
-        
         entityStore.removeEntity(objectId)
-        Log.d(TAG, "Resource depleted: $objectId")
     }
     
-    /**
-     * Handle ChangeCluster - Zone transition
-     * CRITICAL: Clear all entities on zone change
-     */
     private fun handleChangeCluster(params: Map<Int, Any?>) {
         Log.i(TAG, "Zone change detected - clearing entities")
-        
-        // Get zone info if available
         val zoneName = parser.getString(params, 1, "")
-        
         entityStore.clearAll()
         entityStore.setCurrentZone(zoneName)
     }
     
-    /**
-     * Handle HealthUpdate - Entity health changed
-     */
     private fun handleHealthUpdate(params: Map<Int, Any?>) {
         val commonKeys = idMapRepo.getCommonKeys()
         val mobKeys = idMapRepo.getMobKeys()
-        
         val objectId = parser.getInt(params, commonKeys.objectIdKey)
         val health = parser.getFloat(params, mobKeys.healthKey, 1.0f)
         
-        // Update existing entity health
         val existing = entityStore.getEntity(objectId)
         if (existing != null) {
-            val updated = existing.copy(health = health)
-            entityStore.putEntity(updated)
+            entityStore.putEntity(existing.copy(health = health))
         }
     }
 }
