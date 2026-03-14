@@ -608,7 +608,12 @@ class AlbionVpnService : VpnService() {
 
     // ─── Photon Parser Integration ─────────────────────────────────────────────
 
+    private var photonParseCount = 0L
+    private var lastParseLogTime = 0L
+
     private fun parsePhoton(buf: ByteArray, off: Int, len: Int) {
+        photonParseCount++
+        
         try {
             // Extract payload from buffer at offset
             val payload = if (off == 0 && len == buf.size) {
@@ -617,11 +622,23 @@ class AlbionVpnService : VpnService() {
                 buf.copyOfRange(off, off + len)
             }
             
+            // Log first few packets and periodically thereafter
+            val now = System.currentTimeMillis()
+            if (photonParseCount <= 5 || now - lastParseLogTime > 5000) {
+                val hexPreview = payload.take(32).joinToString("") { "%02X".format(it) }
+                DiscoveryLogger.d("Photon #$photonParseCount: len=$len, first32=$hexPreview")
+                lastParseLogTime = now
+            }
+            
             // Use EventDispatcher to parse
-            eventDispatcher.parsePayload(payload)
+            val success = eventDispatcher.parsePayload(payload)
+            
+            if (photonParseCount <= 5) {
+                DiscoveryLogger.d("Photon parse result: success=$success, entities=${entityStore.getEntityCount()}")
+            }
             
         } catch (e: Exception) {
-            DiscoveryLogger.e("Photon parse error: ${e.message}")
+            DiscoveryLogger.e("Photon parse error: ${e.message}", e)
         }
     }
 
