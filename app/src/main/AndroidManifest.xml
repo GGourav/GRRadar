@@ -2,31 +2,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- VPN Service -->
-    <uses-permission android:name="android.permission.BIND_VPN_SERVICE" />
-    
-    <!-- Overlay Permission -->
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
-    
-    <!-- Network -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    
-    <!-- Foreground Services (Android 14+) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-    
-    <!-- Wake Lock for TUN thread -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    
-    <!-- Storage -->
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="28" />
-    
-    <!-- Multi-user -->
-    <uses-permission android:name="android.permission.INTERACT_ACROSS_USERS"
-        tools:ignore="ProtectedPermissions" />
 
     <application
         android:name=".MainApplication"
@@ -49,7 +30,6 @@
             </intent-filter>
         </activity>
 
-        <!-- VPN Service for capturing Albion traffic -->
         <service
             android:name=".vpn.AlbionVpnService"
             android:permission="android.permission.BIND_VPN_SERVICE"
@@ -60,10 +40,9 @@
             </intent-filter>
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="vpn_capture" />
+                android:value="vpn" />
         </service>
 
-        <!-- Radar Overlay Service -->
         <service
             android:name=".overlay.RadarOverlayService"
             android:exported="false"
