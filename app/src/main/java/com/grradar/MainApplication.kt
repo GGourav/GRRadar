@@ -6,7 +6,6 @@ class MainApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        // Initialize default SharedPreferences
         initDefaultPreferences()
     }
 
@@ -14,12 +13,9 @@ class MainApplication : Application() {
         val prefs = getSharedPreferences("grradar_prefs", MODE_PRIVATE)
         val editor = prefs.edit()
 
-        // Set playerDot to true by default (critical for player detection)
         if (!prefs.contains("playerDot")) {
             editor.putBoolean("playerDot", true)
         }
-
-        // Set other default values
         if (!prefs.contains("harvestingFiber")) {
             editor.putBoolean("harvestingFiber", true)
         }
