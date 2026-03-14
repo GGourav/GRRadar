@@ -1,6 +1,7 @@
 package com.grradar.logger
 
 import android.content.Context
+import android.os.Environment
 import android.util.Log
 import java.io.File
 import java.io.FileWriter
@@ -35,24 +36,23 @@ object DiscoveryLogger {
     fun start(context: Context) {
         if (isRunning) return
 
-        // Try external storage first
+        // Use app-specific external storage (works on all Android versions, no special permission needed)
+        // Location: /sdcard/Android/data/com.grradar/files/
         try {
-            val logDir = File("/sdcard/gxradar")
-            if (!logDir.exists()) {
-                logDir.mkdirs()
-            }
-            if (logDir.exists() && logDir.canWrite()) {
-                logFile = File(logDir, "discovery_log.txt")
+            val externalDir = context.getExternalFilesDir(null)
+            if (externalDir != null) {
+                logFile = File(externalDir, "discovery_log.txt")
                 logWriter = PrintWriter(FileWriter(logFile!!, true), true)
-                Log.i(TAG, "DiscoveryLogger: Using external storage: ${logFile!!.absolutePath}")
+                Log.i(TAG, "DiscoveryLogger: Using external files dir: ${logFile!!.absolutePath}")
             } else {
-                throw Exception("External storage not available")
+                // Fallback to internal storage
+                logFile = File(context.filesDir, "discovery_log.txt")
+                logWriter = PrintWriter(FileWriter(logFile!!, true), true)
+                Log.i(TAG, "DiscoveryLogger: Using internal files dir: ${logFile!!.absolutePath}")
             }
         } catch (e: Exception) {
-            // Fallback to internal storage
-            logFile = File(context.filesDir, "discovery_log.txt")
-            logWriter = PrintWriter(FileWriter(logFile!!, true), true)
-            Log.i(TAG, "DiscoveryLogger: Using internal storage: ${logFile!!.absolutePath}")
+            Log.e(TAG, "DiscoveryLogger: Failed to create log file", e)
+            return
         }
 
         // Start writer thread
@@ -86,6 +86,7 @@ object DiscoveryLogger {
 
         isRunning = true
         logInternal("I", "=== DiscoveryLogger started ===")
+        logInternal("I", "Log file location: ${logFile?.absolutePath}")
     }
 
     @Synchronized
@@ -273,4 +274,6 @@ object DiscoveryLogger {
     }
 
     fun getLogFile(): File? = logFile
+
+    fun getLogFilePath(): String? = logFile?.absolutePath
 }
