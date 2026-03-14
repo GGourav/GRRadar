@@ -9,12 +9,10 @@ import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import android.util.Log
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import com.grradar.data.EntityStore
 import com.grradar.logger.DiscoveryLogger
 import com.grradar.overlay.RadarOverlayService
 import com.grradar.vpn.AlbionVpnService
@@ -26,7 +24,6 @@ import com.grradar.vpn.AlbionVpnService
  * - Permission flow (overlay + VPN)
  * - VPN service start/stop
  * - Overlay service start/stop
- * - EntityStore connection between VPN and Overlay
  */
 class MainActivity : AppCompatActivity() {
 
@@ -39,6 +36,8 @@ class MainActivity : AppCompatActivity() {
     // UI Elements
     private lateinit var statusText: TextView
     private lateinit var statsText: TextView
+    private lateinit var overlayPermissionButton: Button
+    private lateinit var vpnPermissionButton: Button
     private lateinit var startButton: Button
     private lateinit var stopButton: Button
 
@@ -57,7 +56,6 @@ class MainActivity : AppCompatActivity() {
                 
                 if (running) {
                     DiscoveryLogger.i("VPN started successfully")
-                    // Start overlay after VPN is running
                     startOverlayService()
                 }
             }
@@ -71,12 +69,22 @@ class MainActivity : AppCompatActivity() {
         // Initialize views
         statusText = findViewById(R.id.statusText)
         statsText = findViewById(R.id.statsText)
+        overlayPermissionButton = findViewById(R.id.overlayPermissionButton)
+        vpnPermissionButton = findViewById(R.id.vpnPermissionButton)
         startButton = findViewById(R.id.startButton)
         stopButton = findViewById(R.id.stopButton)
 
         // Set button listeners
+        overlayPermissionButton.setOnClickListener {
+            requestOverlayPermission()
+        }
+        
+        vpnPermissionButton.setOnClickListener {
+            requestVpnPermission()
+        }
+        
         startButton.setOnClickListener {
-            checkAndStartRadar()
+            startRadar()
         }
         
         stopButton.setOnClickListener {
@@ -96,12 +104,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        
-        // Check permissions on resume
         checkPermissions()
         updateUI()
-        
-        // Update stats periodically
         updateStats()
     }
 
@@ -114,11 +118,7 @@ class MainActivity : AppCompatActivity() {
      * Check required permissions
      */
     private fun checkPermissions() {
-        // Check overlay permission
         hasOverlayPermission = Settings.canDrawOverlays(this)
-        
-        // VPN permission is checked via VpnService.prepare()
-        // If it returns null, we have permission
         val vpnIntent = VpnService.prepare(this)
         hasVpnPermission = vpnIntent == null
         
@@ -126,30 +126,36 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Check permissions and start radar if all granted
+     * Request overlay permission
      */
-    private fun checkAndStartRadar() {
-        // Step 1: Check overlay permission
-        if (!Settings.canDrawOverlays(this)) {
-            DiscoveryLogger.i("Requesting overlay permission")
-            val intent = Intent(
-                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                android.net.Uri.parse("package:$packageName")
-            )
-            startActivityForResult(intent, REQUEST_OVERLAY_PERMISSION)
+    private fun requestOverlayPermission() {
+        if (Settings.canDrawOverlays(this)) {
+            Toast.makeText(this, "Overlay permission already granted", Toast.LENGTH_SHORT).show()
             return
         }
         
-        // Step 2: Check VPN permission
+        DiscoveryLogger.i("Requesting overlay permission")
+        val intent = Intent(
+            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+            android.net.Uri.parse("package:$packageName")
+        )
+        startActivityForResult(intent, REQUEST_OVERLAY_PERMISSION)
+    }
+
+    /**
+     * Request VPN permission
+     */
+    private fun requestVpnPermission() {
         val vpnIntent = VpnService.prepare(this)
-        if (vpnIntent != null) {
-            DiscoveryLogger.i("Requesting VPN permission")
-            startActivityForResult(vpnIntent, REQUEST_VPN_PERMISSION)
+        if (vpnIntent == null) {
+            Toast.makeText(this, "VPN permission already granted", Toast.LENGTH_SHORT).show()
+            hasVpnPermission = true
+            updateUI()
             return
         }
         
-        // All permissions granted, start radar
-        startRadar()
+        DiscoveryLogger.i("Requesting VPN permission")
+        startActivityForResult(vpnIntent, REQUEST_VPN_PERMISSION)
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -160,11 +166,10 @@ class MainActivity : AppCompatActivity() {
                 hasOverlayPermission = Settings.canDrawOverlays(this)
                 if (hasOverlayPermission) {
                     DiscoveryLogger.i("Overlay permission granted")
-                    // Continue to check VPN permission
-                    checkAndStartRadar()
+                    Toast.makeText(this, "Overlay permission granted", Toast.LENGTH_SHORT).show()
                 } else {
                     DiscoveryLogger.w("Overlay permission denied")
-                    Toast.makeText(this, "Overlay permission required for radar display", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "Overlay permission denied", Toast.LENGTH_LONG).show()
                 }
                 updateUI()
             }
@@ -172,11 +177,10 @@ class MainActivity : AppCompatActivity() {
                 hasVpnPermission = resultCode == Activity.RESULT_OK
                 if (hasVpnPermission) {
                     DiscoveryLogger.i("VPN permission granted")
-                    // Start radar
-                    startRadar()
+                    Toast.makeText(this, "VPN permission granted", Toast.LENGTH_SHORT).show()
                 } else {
                     DiscoveryLogger.w("VPN permission denied")
-                    Toast.makeText(this, "VPN permission required for packet capture", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "VPN permission denied", Toast.LENGTH_LONG).show()
                 }
                 updateUI()
             }
@@ -184,17 +188,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Start the radar (VPN + Overlay)
+     * Start the radar
      */
     private fun startRadar() {
-        if (!hasOverlayPermission || !hasVpnPermission) {
-            Toast.makeText(this, "Please grant all permissions first", Toast.LENGTH_SHORT).show()
+        if (!hasOverlayPermission) {
+            Toast.makeText(this, "Please grant Overlay permission first", Toast.LENGTH_SHORT).show()
+            return
+        }
+        
+        if (!hasVpnPermission) {
+            Toast.makeText(this, "Please grant VPN permission first", Toast.LENGTH_SHORT).show()
             return
         }
         
         DiscoveryLogger.i("Starting radar...")
         
-        // Start VPN service
         val vpnIntent = Intent(this, AlbionVpnService::class.java).apply {
             action = AlbionVpnService.ACTION_START
         }
@@ -216,25 +224,6 @@ class MainActivity : AppCompatActivity() {
             action = RadarOverlayService.ACTION_START
         }
         startService(overlayIntent)
-        
-        // Connect EntityStore to overlay after a short delay
-        // (VPN service needs time to create the store)
-        android.os.Handler(mainLooper).postDelayed({
-            connectEntityStore()
-        }, 500)
-    }
-
-    /**
-     * Connect VPN's EntityStore to Overlay
-     */
-    private fun connectEntityStore() {
-        val entityStore = AlbionVpnService.getSharedEntityStore()
-        if (entityStore != null) {
-            DiscoveryLogger.i("EntityStore connected to overlay")
-            // The overlay service will get the store from the VPN service
-        } else {
-            DiscoveryLogger.w("EntityStore not available yet")
-        }
     }
 
     /**
@@ -243,13 +232,11 @@ class MainActivity : AppCompatActivity() {
     private fun stopRadar() {
         DiscoveryLogger.i("Stopping radar...")
         
-        // Stop VPN service
         val vpnIntent = Intent(this, AlbionVpnService::class.java).apply {
             action = AlbionVpnService.ACTION_STOP
         }
         startService(vpnIntent)
         
-        // Stop overlay service
         val overlayIntent = Intent(this, RadarOverlayService::class.java).apply {
             action = RadarOverlayService.ACTION_STOP
         }
@@ -265,19 +252,40 @@ class MainActivity : AppCompatActivity() {
      * Update UI based on current state
      */
     private fun updateUI() {
+        // Update status text
         val status = when {
-            !hasOverlayPermission -> "Overlay permission required"
-            !hasVpnPermission -> "VPN permission required"
-            isRunning -> "Radar Active"
-            else -> "Ready to start"
+            !hasOverlayPermission -> "⚠️ Overlay permission required"
+            !hasVpnPermission -> "⚠️ VPN permission required"
+            isRunning -> "✅ Radar Active"
+            else -> "✅ Ready to start"
         }
-        
         statusText.text = status
         
+        // Update permission buttons
+        if (hasOverlayPermission) {
+            overlayPermissionButton.text = "✓ Overlay Granted"
+            overlayPermissionButton.backgroundTintList = android.content.res.ColorStateList.valueOf(0xFF4CAF50.toInt())
+            overlayPermissionButton.isEnabled = false
+        } else {
+            overlayPermissionButton.text = "Grant Overlay Permission"
+            overlayPermissionButton.backgroundTintList = android.content.res.ColorStateList.valueOf(0xFFFF9800.toInt())
+            overlayPermissionButton.isEnabled = true
+        }
+        
+        if (hasVpnPermission) {
+            vpnPermissionButton.text = "✓ VPN Granted"
+            vpnPermissionButton.backgroundTintList = android.content.res.ColorStateList.valueOf(0xFF4CAF50.toInt())
+            vpnPermissionButton.isEnabled = false
+        } else {
+            vpnPermissionButton.text = "Grant VPN Permission"
+            vpnPermissionButton.backgroundTintList = android.content.res.ColorStateList.valueOf(0xFFFF9800.toInt())
+            vpnPermissionButton.isEnabled = true
+        }
+        
+        // Update radar buttons
         startButton.isEnabled = !isRunning && hasOverlayPermission && hasVpnPermission
         stopButton.isEnabled = isRunning
         
-        // Update button appearance
         startButton.alpha = if (startButton.isEnabled) 1.0f else 0.5f
         stopButton.alpha = if (stopButton.isEnabled) 1.0f else 0.5f
     }
@@ -297,7 +305,6 @@ class MainActivity : AppCompatActivity() {
         
         statsText.text = "Packets: $packetCount | Albion: $albionCount | Entities: $entityCount"
         
-        // Schedule next update
         android.os.Handler(mainLooper).postDelayed({ updateStats() }, 1000)
     }
 }
