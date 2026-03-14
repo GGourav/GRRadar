@@ -22,6 +22,10 @@ import java.util.concurrent.atomic.AtomicLong
  * 
  * Log file location: /sdcard/Android/data/com.grradar/files/discovery_log.txt
  *                     OR context.getExternalFilesDir(null)/discovery_log.txt
+ * 
+ * Provides BOTH:
+ * - Static methods (start/stop/i/w/e/d/v) for VPN service compatibility
+ * - Instance methods (logEvent, logPacket, logNote) for detailed logging
  */
 class DiscoveryLogger private constructor() {
     
@@ -33,19 +37,125 @@ class DiscoveryLogger private constructor() {
         @Volatile
         private var instance: DiscoveryLogger? = null
         
-        fun getInstance(): DiscoveryLogger {
+        // Static instance access for VPN service
+        private fun getInstance(): DiscoveryLogger {
             return instance ?: synchronized(this) {
                 instance ?: DiscoveryLogger().also { instance = it }
             }
+        }
+        
+        // ═══════════════════════════════════════════════════════════════════
+        // STATIC API - Used by AlbionVpnService
+        // ═══════════════════════════════════════════════════════════════════
+        
+        /**
+         * Start the logger with context
+         */
+        fun start(context: Context): Boolean {
+            return getInstance().initialize(context)
+        }
+        
+        /**
+         * Stop the logger
+         */
+        fun stop() {
+            getInstance().shutdown()
+        }
+        
+        /**
+         * Log info message
+         */
+        fun i(message: String) {
+            Log.i(TAG, message)
+            getInstance().logSimple("INFO", message)
+        }
+        
+        /**
+         * Log warning message
+         */
+        fun w(message: String) {
+            Log.w(TAG, message)
+            getInstance().logSimple("WARN", message)
+        }
+        
+        /**
+         * Log error message
+         */
+        fun e(message: String, throwable: Throwable? = null) {
+            Log.e(TAG, message, throwable)
+            val fullMsg = if (throwable != null) {
+                "$message\n${throwable.stackTraceToString()}"
+            } else {
+                message
+            }
+            getInstance().logSimple("ERROR", fullMsg)
+        }
+        
+        /**
+         * Log debug message
+         */
+        fun d(message: String) {
+            Log.d(TAG, message)
+            getInstance().logSimple("DEBUG", message)
+        }
+        
+        /**
+         * Log verbose message
+         */
+        fun v(message: String) {
+            Log.v(TAG, message)
+            getInstance().logSimple("VERBOSE", message)
+        }
+        
+        // ═══════════════════════════════════════════════════════════════════
+        // INSTANCE API - Used for detailed event logging
+        // ═══════════════════════════════════════════════════════════════════
+        
+        /**
+         * Log an event with its parameters (detailed)
+         */
+        fun logEvent(eventName: String, params: Map<Int, Any?>) {
+            getInstance().logEventDetailed(eventName, params)
+        }
+        
+        /**
+         * Log a raw packet (for debugging)
+         */
+        fun logPacket(packetHex: String, description: String = "") {
+            getInstance().logPacketDetailed(packetHex, description)
+        }
+        
+        /**
+         * Log a discovery note
+         */
+        fun logNote(note: String) {
+            getInstance().logNoteDetailed(note)
+        }
+        
+        /**
+         * Get log file path
+         */
+        fun getLogFilePath(): String? = getInstance().logFile?.absolutePath
+        
+        /**
+         * Get event count
+         */
+        fun getEventCount(): Long = getInstance().eventCounter.get()
+        
+        /**
+         * Clear log file
+         */
+        fun clearLog() {
+            getInstance().clearLogFile()
         }
     }
     
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val logChannel = Channel<LogEntry>(capacity = Channel.UNLIMITED)
-    private var logFile: File? = null
+    internal var logFile: File? = null
     private var writer: PrintWriter? = null
     private val gson: Gson = GsonBuilder().setPrettyPrinting().create()
-    private val eventCounter = AtomicLong(0)
+    internal val eventCounter = AtomicLong(0)
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
     
     @Volatile
@@ -120,9 +230,25 @@ class DiscoveryLogger private constructor() {
     }
     
     /**
-     * Log an event with its parameters
+     * Log simple message (for static API)
      */
-    fun logEvent(eventName: String, params: Map<Int, Any?>) {
+    internal fun logSimple(level: String, message: String) {
+        if (!isRunning) return
+        
+        val entry = LogEntry(
+            timestamp = System.currentTimeMillis(),
+            eventName = level,
+            description = message,
+            params = emptyMap()
+        )
+        
+        logChannel.trySendBlocking(entry)
+    }
+    
+    /**
+     * Log an event with its parameters (detailed)
+     */
+    internal fun logEventDetailed(eventName: String, params: Map<Int, Any?>) {
         if (!isRunning) return
         
         val entry = LogEntry(
@@ -138,7 +264,7 @@ class DiscoveryLogger private constructor() {
     /**
      * Log a raw packet (for debugging)
      */
-    fun logPacket(packetHex: String, description: String = "") {
+    internal fun logPacketDetailed(packetHex: String, description: String = "") {
         if (!isRunning) return
         
         val entry = LogEntry(
@@ -155,7 +281,7 @@ class DiscoveryLogger private constructor() {
     /**
      * Log a discovery note
      */
-    fun logNote(note: String) {
+    internal fun logNoteDetailed(note: String) {
         if (!isRunning) return
         
         val entry = LogEntry(
@@ -216,11 +342,7 @@ class DiscoveryLogger private constructor() {
             
             when (value) {
                 null -> sb.append("null")
-                is ByteArray -> {
-                    val hexString = value.copyOfRange(0, minOf(16, value.size))
-                        .joinToString("") { "%02X".format(it) }
-                    sb.append("ByteArray[${value.size}] = $hexString...")
-                }
+                is ByteArray -> sb.append("ByteArray[${value.size}] = ${value.copyOfRange(0, minOf(16, value.size)).joinToString("") { "%02X".format(it) }}...")
                 is IntArray -> sb.append("IntArray[${value.size}] = ${value.take(16).toList()}")
                 is FloatArray -> sb.append("FloatArray[${value.size}] = ${value.take(16).toList()}")
                 is Array<*> -> {
@@ -290,9 +412,9 @@ class DiscoveryLogger private constructor() {
     }
     
     /**
-     * Stop the logger
+     * Shutdown the logger
      */
-    fun stop() {
+    internal fun shutdown() {
         isRunning = false
         scope.cancel()
         writer?.flush()
@@ -301,19 +423,9 @@ class DiscoveryLogger private constructor() {
     }
     
     /**
-     * Get log file path
-     */
-    fun getLogFilePath(): String? = logFile?.absolutePath
-    
-    /**
-     * Get event count
-     */
-    fun getEventCount(): Long = eventCounter.get()
-    
-    /**
      * Clear log file
      */
-    fun clearLog() {
+    internal fun clearLogFile() {
         try {
             writer?.close()
             logFile?.delete()
