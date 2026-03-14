@@ -15,7 +15,6 @@ import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import com.grradar.MainActivity
 import com.grradar.R
@@ -27,7 +26,6 @@ class RadarOverlayService : Service() {
     companion object {
         const val ACTION_START = "com.grradar.overlay.START"
         const val ACTION_STOP = "com.grradar.overlay.STOP"
-        private const val TAG = "RadarOverlayService"
         private const val CHANNEL_ID = "grradar_overlay_channel"
         private const val NOTIFICATION_ID = 1002
         private const val UPDATE_INTERVAL_MS = 500L
@@ -54,7 +52,7 @@ class RadarOverlayService : Service() {
 
     private val logListener: (String) -> Unit = { logs ->
         handler.post {
-            tvLog?.text = logs.takeLast(2000) // Limit to last 2000 chars
+            tvLog?.text = logs.takeLast(2000)
         }
     }
 
@@ -91,7 +89,6 @@ class RadarOverlayService : Service() {
         ).apply {
             description = "Radar overlay display service"
         }
-
         val notificationManager = getSystemService(NotificationManager::class.java)
         notificationManager.createNotificationChannel(channel)
     }
@@ -131,15 +128,12 @@ class RadarOverlayService : Service() {
             y = 100
         }
 
-        // Create overlay with statistics and log display
         overlayView = FrameLayout(this).apply {
-            setBackgroundColor(0xDD000000.toInt()) // Dark semi-transparent background
+            setBackgroundColor(0xDD000000.toInt())
             setPadding(12, 12, 12, 12)
 
-            // Create main container
             val container = FrameLayout(this@RadarOverlayService)
 
-            // Stats section
             tvPc = TextView(this@RadarOverlayService).apply {
                 text = "PC: 0"
                 textSize = 13f
@@ -173,7 +167,6 @@ class RadarOverlayService : Service() {
             }
             container.addView(tvEntity)
 
-            // Log section
             tvLog = TextView(this@RadarOverlayService).apply {
                 text = "Logs will appear here..."
                 textSize = 10f
@@ -192,10 +185,8 @@ class RadarOverlayService : Service() {
         windowManager?.addView(overlayView, params)
         isRunning = true
 
-        // Add log listener
         DiscoveryLogger.addListener(logListener)
-
-        DiscoveryLogger.i("Overlay shown with stats and log display")
+        DiscoveryLogger.i("Overlay shown")
     }
 
     private fun startStatsUpdate() {
@@ -207,13 +198,12 @@ class RadarOverlayService : Service() {
     }
 
     private fun updateStats() {
-        tvPc?.text = "PC: ${AlbionVpnService.totalPacketCount}"
-        tvPca?.text = "PCA: ${AlbionVpnService.albionPacketCount}"
+        tvPc?.text = "PC: ${AlbionVpnService.packetCount.get()}"
+        tvPca?.text = "PCA: ${AlbionVpnService.albionCount.get()}"
         tvEntity?.text = "Entity: ${AlbionVpnService.entityCount}"
     }
 
     private fun hideOverlay() {
-        // Remove log listener
         DiscoveryLogger.removeListener(logListener)
 
         overlayView?.let {
