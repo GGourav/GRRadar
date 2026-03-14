@@ -1,0 +1,12 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Base.Theme.GRRadar" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">#1976D2</item>
+        <item name="colorPrimaryVariant">#1565C0</item>
+        <item name="colorOnPrimary">@android:color/white</item>
+        <item name="colorSecondary">#4CAF50</item>
+        <item name="colorSecondaryVariant">#388E3C</item>
+        <item name="colorOnSecondary">@android:color/white</item>
+    </style>
+
+    <style name="Theme.GRRadar" parent="Base.Theme.GRRadar" />
+</resources>
