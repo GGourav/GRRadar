@@ -5,9 +5,9 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.view.SurfaceView
-import android.view.View
 import com.grradar.data.EntityStore
 import com.grradar.model.*
+import kotlin.math.sqrt
 
 /**
  * Radar Surface View - Custom view for rendering radar entities
@@ -101,7 +101,7 @@ class RadarSurfaceView(context: Context) : SurfaceView(context) {
         val height = height.toFloat()
         val centerX = width / 2
         val centerY = height / 2
-        val radius = (Math.min(width, height) / 2) - borderThickness
+        val radius = (kotlin.math.min(width, height) / 2) - borderThickness
 
         // Draw background
         if (showCircle) {
@@ -142,7 +142,7 @@ class RadarSurfaceView(context: Context) : SurfaceView(context) {
             val screenY = centerY - dy
 
             // Check if within radar bounds
-            val distanceFromCenter = Math.sqrt(
+            val distanceFromCenter = sqrt(
                 (screenX - centerX) * (screenX - centerX) + 
                 (screenY - centerY) * (screenY - centerY)
             )
