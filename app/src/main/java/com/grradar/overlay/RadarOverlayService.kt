@@ -16,6 +16,7 @@ import android.widget.FrameLayout
 import com.grradar.data.EntityStore
 import com.grradar.model.RadarEntity
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Radar Overlay Service - Displays the radar as a floating overlay
@@ -30,6 +31,10 @@ class RadarOverlayService : Service() {
         private const val DEFAULT_RADAR_SIZE = 300 // pixels
         private const val DEFAULT_SCALE = 2.0f // world units per pixel
         private const val UPDATE_INTERVAL_MS = 50L // 20 FPS
+
+        // Intent actions
+        const val ACTION_START = "com.grradar.overlay.ACTION_START"
+        const val ACTION_STOP = "com.grradar.overlay.ACTION_STOP"
 
         @Volatile
         private var isRunning = false
@@ -86,11 +91,24 @@ class RadarOverlayService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.i(TAG, "Overlay Service starting...")
 
-        if (radarContainer == null) {
-            createOverlay()
+        when (intent?.action) {
+            ACTION_START -> {
+                if (radarContainer == null) {
+                    createOverlay()
+                }
+                isRunning = true
+            }
+            ACTION_STOP -> {
+                removeOverlay()
+                stopSelf()
+            }
+            else -> {
+                if (radarContainer == null) {
+                    createOverlay()
+                }
+                isRunning = true
+            }
         }
-
-        isRunning = true
         
         return START_STICKY
     }
@@ -152,7 +170,7 @@ class RadarOverlayService : Service() {
                         val dx = event.rawX.toInt() - lastX
                         val dy = event.rawY.toInt() - lastY
 
-                        if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
+                        if (kotlin.math.abs(dx) > 10 || kotlin.math.abs(dy) > 10) {
                             isDragging = true
                         }
 
@@ -292,15 +310,4 @@ class RadarOverlayService : Service() {
     fun isVisible(): Boolean {
         return radarContainer?.visibility == View.VISIBLE
     }
-}
-
-private class AtomicBoolean(initialValue: Boolean) {
-    @Volatile
-    private var value: Boolean = initialValue
-
-    fun set(newValue: Boolean) {
-        value = newValue
-    }
-
-    fun get(): Boolean = value
 }
