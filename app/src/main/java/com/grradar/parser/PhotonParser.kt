@@ -1,6 +1,7 @@
 package com.grradar.parser
 
 import android.util.Log
+import com.grradar.logger.DiscoveryLogger
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -173,6 +174,12 @@ class PhotonParser(private val callback: PhotonCallback) {
     }
     
     private fun getEventName(eventCode: Int, params: Map<Int, Any?>): String {
+        // First check if there's a name in params[252] (0xFC) - Albion uses this
+        val nameParam = params[252]
+        if (nameParam is String && nameParam.isNotEmpty()) {
+            return nameParam
+        }
+        
         // Known event code mappings
         return when (eventCode) {
             1 -> "JoinFinished"
@@ -200,8 +207,7 @@ class PhotonParser(private val callback: PhotonCallback) {
             254 -> "Move"
             255 -> "ForcedMovement"
             else -> {
-                val nameParam = params[252]
-                if (nameParam is String) nameParam else "Event_$eventCode"
+                "Event_$eventCode"
             }
         }
     }
