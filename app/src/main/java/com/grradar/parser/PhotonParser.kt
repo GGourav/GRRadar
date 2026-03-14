@@ -7,46 +7,16 @@ import java.nio.ByteOrder
 
 /**
  * Photon Protocol 16 Parser for Albion Online
- * 
- * Photon traffic is NOT encrypted - plain binary protocol over UDP port 5056
- * 
- * Packet Structure:
- * - Header (12 bytes):
- *   [0-1]  PeerID      uint16 big-endian
- *   [2]    Flags       uint8
- *   [3]    CmdCount    uint8
- *   [4-7]  Timestamp   uint32
- *   [8-11] Challenge   uint32
- * 
- * - Commands (repeat CmdCount times):
- *   [0]    CmdType     uint8   (6=reliable, 7=unreliable)
- *   [1]    ChannelId   uint8
- *   [2]    CmdFlags    uint8
- *   [3]    Reserved    uint8
- *   [4-7]  CmdLength   uint32  (total bytes including header)
- *   [8-11] ReliableSeq uint32
- *   [12+]  Payload
- * 
- * - Payload (first byte = message type):
- *   0x02 = OperationRequest   (client → server, skip)
- *   0x03 = OperationResponse  (server → client, skip)
- *   0x04 = Event              ← THIS IS WHAT YOU PARSE
  */
 class PhotonParser(private val callback: PhotonCallback) {
     
     companion object {
         private const val TAG = "PhotonParser"
         
-        // Message types
-        private const val MSG_OPERATION_REQUEST: Byte = 0x02
-        private const val MSG_OPERATION_RESPONSE: Byte = 0x03
         private const val MSG_EVENT: Byte = 0x04
-        
-        // Command types
         private const val CMD_RELIABLE: Byte = 0x06
         private const val CMD_UNRELIABLE: Byte = 0x07
         
-        // Photon type codes
         private const val TYPE_NULL: Byte = 0x2A
         private const val TYPE_BOOLEAN: Byte = 0x6F
         private const val TYPE_BYTE: Byte = 0x62
@@ -69,11 +39,9 @@ class PhotonParser(private val callback: PhotonCallback) {
         fun onError(error: String)
     }
     
-    /**
-     * Parse a UDP payload (after IP/UDP headers stripped)
-     */
     fun parse(payload: ByteArray): Boolean {
         if (payload.size < 12) {
+            Log.d(TAG, "Payload too small: ${payload.size} bytes")
             return false
         }
         
@@ -81,29 +49,43 @@ class PhotonParser(private val callback: PhotonCallback) {
             val buffer = ByteBuffer.wrap(payload)
             buffer.order(ByteOrder.BIG_ENDIAN)
             
-            // Parse header
+            // Parse Photon header
             val peerId = buffer.short.toInt() and 0xFFFF
             val flags = buffer.get().toInt() and 0xFF
             val cmdCount = buffer.get().toInt() and 0xFF
             val timestamp = buffer.int.toLong() and 0xFFFFFFFFL
             val challenge = buffer.int.toLong() and 0xFFFFFFFFL
             
-            Log.d(TAG, "Packet: peerId=$peerId, flags=$flags, cmdCount=$cmdCount")
+            Log.d(TAG, "Photon header: peer=$peerId flags=$flags cmds=$cmdCount ts=$timestamp")
+            DiscoveryLogger.d("Photon header: peer=$peerId flags=$flags cmds=$cmdCount ts=$timestamp")
             
-            // Parse each command
-            for (i in 0 until cmdCount) {
-                if (buffer.remaining() < 12) break
-                parseCommand(buffer)
+            if (cmdCount == 0) {
+                Log.d(TAG, "No commands in packet")
+                return true
             }
             
-            true
+            // Parse each command
+            var parsedAny = false
+            for (i in 0 until cmdCount) {
+                if (buffer.remaining() < 12) {
+                    Log.w(TAG, "Buffer exhausted at command $i")
+                    break
+                }
+                if (parseCommand(buffer)) {
+                    parsedAny = true
+                }
+            }
+            
+            parsedAny
         } catch (e: Exception) {
             Log.e(TAG, "Parse error: ${e.message}")
+            DiscoveryLogger.e("Photon parse error: ${e.message}")
+            callback.onError("Parse error: ${e.message}")
             false
         }
     }
     
-    private fun parseCommand(buffer: ByteBuffer) {
+    private fun parseCommand(buffer: ByteBuffer): Boolean {
         val cmdType = buffer.get().toInt() and 0xFF
         val channelId = buffer.get().toInt() and 0xFF
         val cmdFlags = buffer.get().toInt() and 0xFF
@@ -114,73 +96,93 @@ class PhotonParser(private val callback: PhotonCallback) {
         val startPos = buffer.position()
         val payloadLength = cmdLength - 12
         
+        Log.d(TAG, "Command: type=$cmdType ch=$channelId len=$cmdLength payLen=$payloadLength")
+        
         if (payloadLength <= 0 || buffer.remaining() < payloadLength) {
-            return
+            Log.w(TAG, "Invalid payload length: $payloadLength, remaining: ${buffer.remaining()}")
+            return false
         }
         
         val payloadBytes = ByteArray(payloadLength)
         buffer.get(payloadBytes)
         
-        when (cmdType.toByte()) {
-            CMD_RELIABLE, CMD_UNRELIABLE -> parsePayload(payloadBytes)
+        val isReliable = cmdType.toByte() == CMD_RELIABLE
+        val isUnreliable = cmdType.toByte() == CMD_UNRELIABLE
+        
+        var result = false
+        if (isReliable || isUnreliable) {
+            result = parsePayload(payloadBytes)
         }
         
         buffer.position(startPos + payloadLength)
+        return result
     }
     
-    private fun parsePayload(payload: ByteArray) {
-        if (payload.isEmpty()) return
+    private fun parsePayload(payload: ByteArray): Boolean {
+        if (payload.isEmpty()) return false
         
-        when (payload[0]) {
+        val msgType = payload[0]
+        Log.d(TAG, "Payload msgType: 0x%02X".format(msgType))
+        
+        return when (msgType) {
             MSG_EVENT -> parseEvent(payload)
-            MSG_OPERATION_REQUEST -> { /* Skip */ }
-            MSG_OPERATION_RESPONSE -> { /* Skip */ }
+            else -> {
+                Log.d(TAG, "Not an event (type=0x%02X), skipping".format(msgType))
+                false
+            }
         }
     }
     
-    private fun parseEvent(payload: ByteArray) {
-        if (payload.size < 3) return
+    private fun parseEvent(payload: ByteArray): Boolean {
+        if (payload.size < 3) {
+            Log.w(TAG, "Event payload too small: ${payload.size}")
+            return false
+        }
         
         val buffer = ByteBuffer.wrap(payload)
         buffer.order(ByteOrder.BIG_ENDIAN)
         
-        buffer.get() // Skip message type byte
+        buffer.get() // Skip message type (0x04)
         val eventCode = buffer.get().toInt() and 0xFF
         val paramCount = buffer.short.toInt() and 0xFFFF
         
-        Log.d(TAG, "Event: code=$eventCode, paramCount=$paramCount")
+        Log.d(TAG, "Event: code=$eventCode params=$paramCount")
+        DiscoveryLogger.d("Photon event: code=$eventCode params=$paramCount")
         
         val params = HashMap<Int, Any?>()
         
         for (i in 0 until paramCount) {
-            if (buffer.remaining() < 2) break
-            
+            if (buffer.remaining() < 2) {
+                Log.w(TAG, "Buffer exhausted reading param $i")
+                break
+            }
             try {
                 val key = buffer.get().toInt() and 0xFF
                 val value = readValue(buffer)
                 params[key] = value
-                
                 Log.v(TAG, "Param[$key] = $value")
             } catch (e: Exception) {
-                Log.w(TAG, "Error reading param $i: ${e.message}")
+                Log.w(TAG, "Param read error at $i: ${e.message}")
                 break
             }
         }
         
         val eventName = getEventName(eventCode, params)
-        Log.d(TAG, "Dispatching event: $eventName with ${params.size} params")
+        Log.d(TAG, "Dispatching event: $eventName")
+        DiscoveryLogger.d("Dispatching event: $eventName")
         
         callback.onEvent(eventName, params)
+        return true
     }
     
     private fun getEventName(eventCode: Int, params: Map<Int, Any?>): String {
-        // First check if there's a name in params[252] (0xFC) - Albion uses this
+        // Try to get name from param 252 (0xFC) - Albion uses this for actual event name
         val nameParam = params[252]
         if (nameParam is String && nameParam.isNotEmpty()) {
             return nameParam
         }
         
-        // Known event code mappings
+        // Fallback to event code mapping
         return when (eventCode) {
             1 -> "JoinFinished"
             2 -> "NewCharacter"
@@ -193,28 +195,20 @@ class PhotonParser(private val callback: PhotonCallback) {
             9 -> "NewFishingZoneObject"
             10 -> "NewMistsCagedWisp"
             11 -> "NewMistsWispSpawn"
-            12 -> "NewMistDungeonRoomMobSoul"
             13 -> "NewLootChest"
             14 -> "NewTreasureChest"
-            15 -> "NewCarriableObject"
             16 -> "NewRandomDungeonExit"
-            17 -> "NewExpeditionExit"
             18 -> "NewHellgateExitPortal"
             19 -> "NewMistsDungeonExit"
-            20 -> "NewPortalEntrance"
-            21 -> "NewPortalExit"
             253 -> "Leave"
             254 -> "Move"
             255 -> "ForcedMovement"
-            else -> {
-                "Event_$eventCode"
-            }
+            else -> "Event_$eventCode"
         }
     }
     
     private fun readValue(buffer: ByteBuffer): Any? {
         if (buffer.remaining() < 1) return null
-        
         val typeCode = buffer.get()
         
         return when (typeCode) {
@@ -234,7 +228,7 @@ class PhotonParser(private val callback: PhotonCallback) {
             TYPE_DICTIONARY -> readDictionary(buffer)
             TYPE_OBJECT_ARRAY -> readObjectArray(buffer)
             else -> {
-                Log.w(TAG, "Unknown type code: 0x${"%02X".format(typeCode)}")
+                Log.w(TAG, "Unknown type: 0x%02X".format(typeCode))
                 null
             }
         }
@@ -242,10 +236,8 @@ class PhotonParser(private val callback: PhotonCallback) {
     
     private fun readString(buffer: ByteBuffer): String {
         if (buffer.remaining() < 2) return ""
-        
         val length = buffer.short.toInt() and 0xFFFF
         if (length == 0 || length > buffer.remaining()) return ""
-        
         val bytes = ByteArray(length)
         buffer.get(bytes)
         return String(bytes, Charsets.UTF_8)
@@ -253,10 +245,8 @@ class PhotonParser(private val callback: PhotonCallback) {
     
     private fun readByteArray(buffer: ByteBuffer): ByteArray {
         if (buffer.remaining() < 4) return ByteArray(0)
-        
         val length = buffer.int
         if (length <= 0 || length > buffer.remaining()) return ByteArray(0)
-        
         val bytes = ByteArray(length)
         buffer.get(bytes)
         return bytes
@@ -264,205 +254,111 @@ class PhotonParser(private val callback: PhotonCallback) {
     
     private fun readIntArray(buffer: ByteBuffer): IntArray {
         if (buffer.remaining() < 4) return IntArray(0)
-        
         val length = buffer.int
         if (length <= 0 || length * 4 > buffer.remaining()) return IntArray(0)
-        
-        val array = IntArray(length)
-        for (i in 0 until length) {
-            array[i] = buffer.int
-        }
-        return array
+        return IntArray(length) { buffer.int }
     }
     
     private fun readArray(buffer: ByteBuffer): Array<Any?> {
         if (buffer.remaining() < 3) return arrayOfNulls(0)
-        
         val length = buffer.short.toInt() and 0xFFFF
         buffer.get() // elementType
-        
         if (length <= 0) return arrayOfNulls(0)
-        
-        val array = arrayOfNulls<Any>(length)
-        for (i in 0 until length) {
-            array[i] = readValue(buffer)
-        }
-        return array
+        return Array(length) { readValue(buffer) }
     }
     
     private fun readHashtable(buffer: ByteBuffer): Map<Any?, Any?> {
         if (buffer.remaining() < 2) return emptyMap()
-        
         val count = buffer.short.toInt() and 0xFFFF
         if (count == 0) return emptyMap()
-        
         val map = HashMap<Any?, Any?>(count)
-        for (i in 0 until count) {
-            val key = readValue(buffer)
-            val value = readValue(buffer)
-            map[key] = value
-        }
+        repeat(count) { map[readValue(buffer)] = readValue(buffer) }
         return map
     }
     
     private fun readDictionary(buffer: ByteBuffer): Map<Any?, Any?> {
         if (buffer.remaining() < 4) return emptyMap()
-        
         buffer.get() // keyType
         buffer.get() // valueType
         val count = buffer.short.toInt() and 0xFFFF
-        
         if (count == 0) return emptyMap()
-        
         val map = HashMap<Any?, Any?>(count)
-        for (i in 0 until count) {
-            val key = readValue(buffer)
-            val value = readValue(buffer)
-            map[key] = value
-        }
+        repeat(count) { map[readValue(buffer)] = readValue(buffer) }
         return map
     }
     
     private fun readObjectArray(buffer: ByteBuffer): Array<Any?> {
         if (buffer.remaining() < 2) return arrayOfNulls(0)
-        
         val length = buffer.short.toInt() and 0xFFFF
         if (length <= 0) return arrayOfNulls(0)
-        
-        val array = arrayOfNulls<Any>(length)
-        for (i in 0 until length) {
-            array[i] = readValue(buffer)
-        }
-        return array
+        return Array(length) { readValue(buffer) }
     }
     
-    // ===== Value extraction helpers =====
+    // ===== Helper methods for EventDispatcher =====
     
     fun getInt(params: Map<Int, Any?>, key: Int, default: Int = 0): Int {
-        val value = params[key] ?: return default
-        return when (value) {
-            is Int -> value
-            is Long -> value.toInt()
-            is Short -> value.toInt()
-            is Byte -> value.toInt()
-            is Number -> value.toInt()
+        return when (val v = params[key]) {
+            is Int -> v
+            is Long -> v.toInt()
+            is Number -> v.toInt()
             else -> default
         }
     }
     
     fun getFloat(params: Map<Int, Any?>, key: Int, default: Float = 0f): Float {
-        val value = params[key] ?: return default
-        return when (value) {
-            is Float -> value
-            is Double -> value.toFloat()
-            is Int -> value.toFloat()
-            is Long -> value.toFloat()
-            is Number -> value.toFloat()
+        return when (val v = params[key]) {
+            is Float -> v
+            is Double -> v.toFloat()
+            is Number -> v.toFloat()
             else -> default
         }
     }
     
     fun getString(params: Map<Int, Any?>, key: Int, default: String = ""): String {
-        val value = params[key] ?: return default
-        return when (value) {
-            is String -> value
-            else -> value.toString()
-        }
-    }
-    
-    fun getBoolean(params: Map<Int, Any?>, key: Int, default: Boolean = false): Boolean {
-        val value = params[key] ?: return default
-        return when (value) {
-            is Boolean -> value
-            is Int -> value != 0
-            is Byte -> value != 0.toByte()
-            is Number -> value.toInt() != 0
+        return when (val v = params[key]) {
+            is String -> v
             else -> default
         }
     }
     
-    fun getByteArray(params: Map<Int, Any?>, key: Int): ByteArray? {
-        val value = params[key] ?: return null
-        return when (value) {
-            is ByteArray -> value
-            else -> null
-        }
-    }
-    
-    @Suppress("UNCHECKED_CAST")
-    fun getMap(params: Map<Int, Any?>, key: Int): Map<*, *>? {
-        val value = params[key] ?: return null
-        return when (value) {
-            is Map<*, *> -> value
-            else -> null
+    fun getBoolean(params: Map<Int, Any?>, key: Int, default: Boolean = false): Boolean {
+        return when (val v = params[key]) {
+            is Boolean -> v
+            is Int -> v != 0
+            is Number -> v.toInt() != 0
+            else -> default
         }
     }
     
     @Suppress("UNCHECKED_CAST")
     fun getList(params: Map<Int, Any?>, key: Int): List<*>? {
-        val value = params[key] ?: return null
-        return when (value) {
-            is List<*> -> value
-            is Array<*> -> value.toList()
+        return when (val v = params[key]) {
+            is List<*> -> v
+            is Array<*> -> v.toList()
             else -> null
         }
     }
     
-    // ===== Plan B scanners =====
-    
-    /**
-     * Plan B: Scan all string params for tier prefix (T1_ through T8_)
-     * Used when typeNameKey is unknown
-     */
     fun scanForTierPrefix(params: Map<Int, Any?>): String? {
-        for ((_, value) in params) {
-            if (value is String) {
-                val upper = value.uppercase()
-                for (tier in 1..8) {
-                    if (upper.startsWith("T${tier}_")) {
-                        return value
-                    }
+        for (v in params.values) {
+            if (v is String) {
+                val upper = v.uppercase()
+                for (t in 1..8) {
+                    if (upper.startsWith("T${t}_")) return v
                 }
             }
         }
         return null
     }
     
-    /**
-     * Plan B: Scan all float params for world coordinates
-     * Albion world coordinates are in range [-32768, +32768]
-     */
     fun scanForCoordinates(params: Map<Int, Any?>, minValid: Float, maxValid: Float): Pair<Float, Float>? {
         val floats = mutableListOf<Float>()
-        
-        for ((_, value) in params) {
-            when (value) {
-                is Float -> {
-                    if (value in minValid..maxValid && value != 0f) {
-                        floats.add(value)
-                    }
-                }
-                is Double -> {
-                    val f = value.toFloat()
-                    if (f in minValid..maxValid && f != 0f) {
-                        floats.add(f)
-                    }
-                }
+        for (v in params.values) {
+            when (v) {
+                is Float -> if (v in minValid..maxValid && v != 0f) floats.add(v)
+                is Double -> { val f = v.toFloat(); if (f in minValid..maxValid && f != 0f) floats.add(f) }
             }
         }
-        
-        // First two valid floats are usually posX and posY
-        if (floats.size >= 2) {
-            return Pair(floats[0], floats[1])
-        }
-        
-        return null
-    }
-    
-    /**
-     * Scan for coordinate values with specific min/max from config
-     */
-    fun scanForCoordinates(params: Map<Int, Any?>, minValid: Double, maxValid: Double): Pair<Float, Float>? {
-        return scanForCoordinates(params, minValid.toFloat(), maxValid.toFloat())
+        return if (floats.size >= 2) Pair(floats[0], floats[1]) else null
     }
 }
