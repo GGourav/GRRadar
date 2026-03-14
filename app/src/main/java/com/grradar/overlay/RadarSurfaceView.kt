@@ -9,30 +9,17 @@ import com.grradar.data.EntityStore
 import com.grradar.model.*
 import kotlin.math.sqrt
 
-/**
- * Radar Surface View - Custom view for rendering radar entities
- * 
- * Draws colored dots on a circular radar display centered on local player.
- */
 class RadarSurfaceView(context: Context) : SurfaceView(context) {
 
     companion object {
-        private const val TAG = "RadarSurfaceView"
         private const val DEFAULT_SCALE = 2.0f
     }
 
-    // Entity data
     private var entityStore: EntityStore? = null
-
-    // Rendering config
     private var scale = DEFAULT_SCALE
-    private var showCircle = true
-    private var showBorder = true
     private var selfDotSize = 8f
     private var entityDotSize = 6f
-    private var borderThickness = 2f
 
-    // Paints
     private val backgroundPaint = Paint().apply {
         color = Color.parseColor("#80000000")
         style = Paint.Style.FILL
@@ -42,7 +29,7 @@ class RadarSurfaceView(context: Context) : SurfaceView(context) {
     private val borderPaint = Paint().apply {
         color = Color.parseColor("#40FFFFFF")
         style = Paint.Style.STROKE
-        strokeWidth = borderThickness
+        strokeWidth = 2f
         isAntiAlias = true
     }
 
@@ -54,11 +41,10 @@ class RadarSurfaceView(context: Context) : SurfaceView(context) {
 
     private val textPaint = Paint().apply {
         color = Color.WHITE
-        textSize = 10f
+        textSize = 12f
         isAntiAlias = true
     }
 
-    // Entity paints by type
     private val entityPaints = mutableMapOf<EntityType, Paint>()
 
     init {
@@ -69,11 +55,7 @@ class RadarSurfaceView(context: Context) : SurfaceView(context) {
     private fun initPaints() {
         EntityType.entries.forEach { type ->
             entityPaints[type] = Paint().apply {
-                try {
-                    color = Color.parseColor(type.colorHex)
-                } catch (e: Exception) {
-                    color = Color.GRAY
-                }
+                color = try { Color.parseColor(type.colorHex) } catch (e: Exception) { Color.GRAY }
                 style = Paint.Style.FILL
                 isAntiAlias = true
             }
@@ -88,11 +70,6 @@ class RadarSurfaceView(context: Context) : SurfaceView(context) {
         scale = newScale
     }
 
-    fun setDisplayOptions(circle: Boolean, border: Boolean) {
-        showCircle = circle
-        showBorder = border
-    }
-
     override fun draw(canvas: Canvas) {
         super.draw(canvas)
 
@@ -101,65 +78,36 @@ class RadarSurfaceView(context: Context) : SurfaceView(context) {
         val height = height.toFloat()
         val centerX = width / 2
         val centerY = height / 2
-        val radius = (kotlin.math.min(width, height) / 2) - borderThickness
+        val radius = (kotlin.math.min(width, height) / 2) - 2f
 
-        // Draw background
-        if (showCircle) {
-            canvas.drawCircle(centerX, centerY, radius, backgroundPaint)
-        } else {
-            canvas.drawRect(0f, 0f, width, height, backgroundPaint)
-        }
+        canvas.drawCircle(centerX, centerY, radius, backgroundPaint)
+        canvas.drawCircle(centerX, centerY, radius, borderPaint)
 
-        // Draw border
-        if (showBorder) {
-            if (showCircle) {
-                canvas.drawCircle(centerX, centerY, radius, borderPaint)
-            } else {
-                canvas.drawRect(
-                    borderThickness / 2,
-                    borderThickness / 2,
-                    width - borderThickness / 2,
-                    height - borderThickness / 2,
-                    borderPaint
-                )
-            }
-        }
-
-        // Get local player position
         val (localX, localY) = store.getLocalPlayerPosition()
-
-        // Draw entities
         val entities = store.getAllEntities()
-        val rangePixels = radius
 
         entities.forEach { entity ->
-            // Convert world coordinates to screen coordinates
             val dx = (entity.worldX - localX) * scale
             val dy = (entity.worldY - localY) * scale
 
-            // Canvas Y is inverted
             val screenX = centerX + dx
             val screenY = centerY - dy
 
-            // Check if within radar bounds
-            val distanceFromCenter = sqrt(
-                (screenX - centerX) * (screenX - centerX) + 
-                (screenY - centerY) * (screenY - centerY)
-            )
+            // FIX: Use kotlin.math.sqrt with Float
+            val distSq = (screenX - centerX) * (screenX - centerX) + 
+                         (screenY - centerY) * (screenY - centerY)
             
-            if (distanceFromCenter <= rangePixels) {
+            if (distSq <= radius * radius) {
                 drawEntity(canvas, entity, screenX, screenY)
             }
         }
 
-        // Draw self (center dot)
         canvas.drawCircle(centerX, centerY, selfDotSize, selfPaint)
     }
 
     private fun drawEntity(canvas: Canvas, entity: RadarEntity, x: Float, y: Float) {
         val paint = entityPaints[entity.type] ?: return
 
-        // Size based on entity type
         val size = when {
             entity.isBoss -> entityDotSize * 2
             entity.isElite -> entityDotSize * 1.5f
@@ -167,19 +115,12 @@ class RadarSurfaceView(context: Context) : SurfaceView(context) {
             else -> entityDotSize
         }
 
-        // Draw main dot
         canvas.drawCircle(x, y, size, paint)
 
-        // Draw enchantment ring for resources
         if (entity.isResource() && entity.enchantment.level > 0) {
-            val ringColor = entity.enchantment.ringColorHex
-            if (ringColor != null) {
+            entity.enchantment.ringColorHex?.let { ringColor ->
                 val ringPaint = Paint().apply {
-                    color = try {
-                        Color.parseColor(ringColor)
-                    } catch (e: Exception) {
-                        Color.WHITE
-                    }
+                    color = try { Color.parseColor(ringColor) } catch (e: Exception) { Color.WHITE }
                     style = Paint.Style.STROKE
                     strokeWidth = 2f
                     isAntiAlias = true
@@ -188,15 +129,10 @@ class RadarSurfaceView(context: Context) : SurfaceView(context) {
             }
         }
 
-        // Draw name for players
         if (entity.type == EntityType.PLAYER || entity.type == EntityType.HOSTILE_PLAYER) {
             if (entity.name.isNotEmpty()) {
                 canvas.drawText(entity.name, x + size + 2, y + 4, textPaint)
             }
         }
-    }
-
-    fun refresh() {
-        invalidate()
     }
 }
