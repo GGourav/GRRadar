@@ -1,279 +1,340 @@
 package com.grradar.logger
 
 import android.content.Context
-import android.os.Environment
 import android.util.Log
+import com.google.gson.Gson
+import com.google.gson.GsonBuilder
+import com.google.gson.JsonObject
+import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.trySendBlocking
 import java.io.File
 import java.io.FileWriter
 import java.io.PrintWriter
 import java.text.SimpleDateFormat
 import java.util.*
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.ConcurrentLinkedQueue
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
-object DiscoveryLogger {
-
-    private const val TAG = "GRRadar"
-    private const val MAX_LOG_ENTRIES = 500
-    private const val MAX_QUEUE_SIZE = 10000
-    private const val MAX_OCCURRENCES_PER_EVENT = 20
-
-    private val logQueue = ConcurrentLinkedQueue<String>()
-    private val inMemoryBuffer = ConcurrentLinkedQueue<String>()
-    private val eventOccurrenceCount = ConcurrentHashMap<String, AtomicInteger>()
-
-    private var logWriter: PrintWriter? = null
-    private var writerThread: Thread? = null
-    private var isRunning = false
-
-    private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault())
-    private var logFile: File? = null
-
-    private val listeners = mutableListOf<(String) -> Unit>()
-
-    @Synchronized
-    fun start(context: Context) {
-        if (isRunning) return
-
-        // Use app-specific external storage (works on all Android versions, no special permission needed)
-        // Location: /sdcard/Android/data/com.grradar/files/
-        try {
-            val externalDir = context.getExternalFilesDir(null)
-            if (externalDir != null) {
-                logFile = File(externalDir, "discovery_log.txt")
-                logWriter = PrintWriter(FileWriter(logFile!!, true), true)
-                Log.i(TAG, "DiscoveryLogger: Using external files dir: ${logFile!!.absolutePath}")
-            } else {
-                // Fallback to internal storage
-                logFile = File(context.filesDir, "discovery_log.txt")
-                logWriter = PrintWriter(FileWriter(logFile!!, true), true)
-                Log.i(TAG, "DiscoveryLogger: Using internal files dir: ${logFile!!.absolutePath}")
+/**
+ * Discovery Logger - Async param logger for debugging
+ * 
+ * Logs all Photon event params to a file for reverse engineering.
+ * Use this when id_map.json keys are unknown or have shifted.
+ * 
+ * Log file location: /sdcard/Android/data/com.grradar/files/discovery_log.txt
+ *                     OR context.getExternalFilesDir(null)/discovery_log.txt
+ */
+class DiscoveryLogger private constructor() {
+    
+    companion object {
+        private const val TAG = "DiscoveryLogger"
+        private const val MAX_LOG_SIZE = 10 * 1024 * 1024L // 10MB
+        private const val FLUSH_INTERVAL = 1000L // 1 second
+        
+        @Volatile
+        private var instance: DiscoveryLogger? = null
+        
+        fun getInstance(): DiscoveryLogger {
+            return instance ?: synchronized(this) {
+                instance ?: DiscoveryLogger().also { instance = it }
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "DiscoveryLogger: Failed to create log file", e)
-            return
         }
-
-        // Start writer thread
-        writerThread = Thread {
-            while (isRunning || logQueue.isNotEmpty()) {
+    }
+    
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val logChannel = Channel<LogEntry>(capacity = Channel.UNLIMITED)
+    private var logFile: File? = null
+    private var writer: PrintWriter? = null
+    private val gson: Gson = GsonBuilder().setPrettyPrinting().create()
+    private val eventCounter = AtomicLong(0)
+    private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
+    
+    @Volatile
+    private var isRunning = false
+    
+    /**
+     * Initialize the logger
+     */
+    fun initialize(context: Context): Boolean {
+        return try {
+            val filesDir = context.getExternalFilesDir(null) 
+                ?: File(context.filesDir, "logs")
+            
+            if (!filesDir.exists()) {
+                filesDir.mkdirs()
+            }
+            
+            logFile = File(filesDir, "discovery_log.txt")
+            
+            // Rotate if too large
+            rotateIfNeeded()
+            
+            // Start writer coroutine
+            startWriter()
+            
+            Log.i(TAG, "Logger initialized: ${logFile?.absolutePath}")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to initialize logger: ${e.message}")
+            false
+        }
+    }
+    
+    /**
+     * Start the async writer coroutine
+     */
+    private fun startWriter() {
+        if (isRunning) return
+        
+        isRunning = true
+        
+        scope.launch {
+            var lastFlush = System.currentTimeMillis()
+            
+            while (isRunning) {
                 try {
-                    val entry = logQueue.poll()
-                    if (entry != null) {
-                        logWriter?.println(entry)
-
-                        inMemoryBuffer.add(entry)
-                        while (inMemoryBuffer.size > MAX_LOG_ENTRIES) {
-                            inMemoryBuffer.poll()
-                        }
-
-                        notifyListeners()
-                    } else {
-                        Thread.sleep(50)
+                    // Use select for timeout-based flush
+                    val entry = withTimeoutOrNull(FLUSH_INTERVAL) {
+                        logChannel.receive()
                     }
-                } catch (e: InterruptedException) {
-                    break
+                    
+                    if (entry != null) {
+                        writeEntry(entry)
+                    }
+                    
+                    // Periodic flush
+                    if (System.currentTimeMillis() - lastFlush > FLUSH_INTERVAL) {
+                        writer?.flush()
+                        lastFlush = System.currentTimeMillis()
+                    }
                 } catch (e: Exception) {
-                    Log.e(TAG, "DiscoveryLogger writer error: ${e.message}")
+                    if (e !is TimeoutCancellationException) {
+                        Log.w(TAG, "Writer error: ${e.message}")
+                    }
                 }
             }
-        }.apply {
-            name = "DiscoveryLogger-Writer"
-            isDaemon = true
-            start()
+            
+            // Final flush on shutdown
+            writer?.flush()
+            writer?.close()
         }
-
-        isRunning = true
-        logInternal("I", "=== DiscoveryLogger started ===")
-        logInternal("I", "Log file location: ${logFile?.absolutePath}")
     }
-
-    @Synchronized
+    
+    /**
+     * Log an event with its parameters
+     */
+    fun logEvent(eventName: String, params: Map<Int, Any?>) {
+        if (!isRunning) return
+        
+        val entry = LogEntry(
+            timestamp = System.currentTimeMillis(),
+            eventName = eventName,
+            params = params
+        )
+        
+        logChannel.trySendBlocking(entry)
+        eventCounter.incrementAndGet()
+    }
+    
+    /**
+     * Log a raw packet (for debugging)
+     */
+    fun logPacket(packetHex: String, description: String = "") {
+        if (!isRunning) return
+        
+        val entry = LogEntry(
+            timestamp = System.currentTimeMillis(),
+            eventName = "RAW_PACKET",
+            rawHex = packetHex,
+            description = description,
+            params = emptyMap()
+        )
+        
+        logChannel.trySendBlocking(entry)
+    }
+    
+    /**
+     * Log a discovery note
+     */
+    fun logNote(note: String) {
+        if (!isRunning) return
+        
+        val entry = LogEntry(
+            timestamp = System.currentTimeMillis(),
+            eventName = "NOTE",
+            description = note,
+            params = emptyMap()
+        )
+        
+        logChannel.trySendBlocking(entry)
+    }
+    
+    /**
+     * Write an entry to the log file
+     */
+    private fun writeEntry(entry: LogEntry) {
+        try {
+            if (writer == null && logFile != null) {
+                writer = PrintWriter(FileWriter(logFile, true))
+            }
+            
+            val timestamp = dateFormat.format(Date(entry.timestamp))
+            
+            writer?.println("═".repeat(60))
+            writer?.println("[$timestamp] Event #${eventCounter.get()}")
+            writer?.println("═".repeat(60))
+            writer?.println("Event: ${entry.eventName}")
+            
+            if (entry.description.isNotEmpty()) {
+                writer?.println("Description: ${entry.description}")
+            }
+            
+            if (entry.rawHex.isNotEmpty()) {
+                writer?.println("Raw Hex: ${entry.rawHex}")
+            }
+            
+            if (entry.params.isNotEmpty()) {
+                writer?.println("Parameters:")
+                writer?.println(formatParams(entry.params))
+            }
+            
+            writer?.println()
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Write error: ${e.message}")
+        }
+    }
+    
+    /**
+     * Format parameters for logging
+     */
+    private fun formatParams(params: Map<Int, Any?>): String {
+        val sb = StringBuilder()
+        
+        // Sort by key for easier reading
+        params.toSortedMap().forEach { (key, value) ->
+            sb.append("  Key $key: ")
+            
+            when (value) {
+                null -> sb.append("null")
+                is ByteArray -> sb.append("ByteArray[${value.size}] = ${value.take(16).toHexString()}...")
+                is IntArray -> sb.append("IntArray[${value.size}] = ${value.take(16).toList()}")
+                is FloatArray -> sb.append("FloatArray[${value.size}] = ${value.take(16).toList()}")
+                is Array<*> -> {
+                    sb.append("Array[${value.size}]:\n")
+                    value.take(5).forEachIndexed { i, item ->
+                        sb.append("    [$i] ${formatValue(item)}\n")
+                    }
+                    if (value.size > 5) {
+                        sb.append("    ... and ${value.size - 5} more\n")
+                    }
+                }
+                is Map<*, *> -> {
+                    sb.append("Map[${value.size}]:\n")
+                    value.entries.take(5).forEach { (k, v) ->
+                        sb.append("    $k -> ${formatValue(v)}\n")
+                    }
+                    if (value.size > 5) {
+                        sb.append("    ... and ${value.size - 5} more\n")
+                    }
+                }
+                is List<*> -> {
+                    sb.append("List[${value.size}]:\n")
+                    value.take(5).forEachIndexed { i, item ->
+                        sb.append("    [$i] ${formatValue(item)}\n")
+                    }
+                    if (value.size > 5) {
+                        sb.append("    ... and ${value.size - 5} more\n")
+                    }
+                }
+                else -> sb.append(formatValue(value))
+            }
+            
+            sb.append("\n")
+        }
+        
+        return sb.toString()
+    }
+    
+    /**
+     * Format a single value
+     */
+    private fun formatValue(value: Any?): String {
+        return when (value) {
+            null -> "null"
+            is String -> "\"$value\""
+            is Float -> String.format("%.2f", value)
+            is Double -> String.format("%.4f", value)
+            is ByteArray -> "ByteArray[${value.size}]"
+            else -> value.toString()
+        }
+    }
+    
+    /**
+     * Rotate log file if too large
+     */
+    private fun rotateIfNeeded() {
+        val file = logFile ?: return
+        
+        if (file.exists() && file.length() > MAX_LOG_SIZE) {
+            val rotated = File(file.parent, "discovery_log_old.txt")
+            if (rotated.exists()) {
+                rotated.delete()
+            }
+            file.renameTo(rotated)
+            Log.i(TAG, "Rotated log file")
+        }
+    }
+    
+    /**
+     * Stop the logger
+     */
     fun stop() {
         isRunning = false
-        writerThread?.interrupt()
-        writerThread = null
-        logWriter?.flush()
-        logWriter?.close()
-        logWriter = null
-        eventOccurrenceCount.clear()
+        scope.cancel()
+        writer?.flush()
+        writer?.close()
+        writer = null
     }
-
-    fun addListener(listener: (String) -> Unit) {
-        listeners.add(listener)
-    }
-
-    fun removeListener(listener: (String) -> Unit) {
-        listeners.remove(listener)
-    }
-
-    private fun notifyListeners() {
-        val recentLogs = getRecentLogs(50)
-        listeners.forEach { listener ->
-            try {
-                listener(recentLogs)
-            } catch (e: Exception) {
-                // Ignore
-            }
-        }
-    }
-
-    fun d(message: String) {
-        Log.d(TAG, message)
-        logInternal("D", message)
-    }
-
-    fun i(message: String) {
-        Log.i(TAG, message)
-        logInternal("I", message)
-    }
-
-    fun w(message: String) {
-        Log.w(TAG, message)
-        logInternal("W", message)
-    }
-
-    fun e(message: String, throwable: Throwable? = null) {
-        Log.e(TAG, message, throwable)
-        val fullMessage = if (throwable != null) {
-            "$message - ${throwable.message}"
-        } else {
-            message
-        }
-        logInternal("E", fullMessage)
-    }
-
-    fun v(message: String) {
-        Log.v(TAG, message)
-        // Don't log verbose to file
-    }
-
-    private fun logInternal(level: String, message: String) {
-        val timestamp = dateFormat.format(Date())
-        val entry = "[$timestamp] $level: $message"
-
-        if (logQueue.size < MAX_QUEUE_SIZE) {
-            logQueue.add(entry)
-        }
-    }
-
-    fun logAllParams(eventName: String, objectId: Int, params: Map<Int, Any?>) {
-        val count = eventOccurrenceCount.getOrPut(eventName) { AtomicInteger(0) }
-        val occurrence = count.incrementAndGet()
-
-        if (occurrence > MAX_OCCURRENCES_PER_EVENT) {
-            return
-        }
-
-        val timestamp = dateFormat.format(Date())
-        val sb = StringBuilder()
-        sb.appendLine("[$timestamp] PARAMS $eventName objectId=$objectId (occurrence $occurrence/$MAX_OCCURRENCES_PER_EVENT)")
-        sb.appendLine("  Param count: ${params.size}")
-
-        params.entries.sortedBy { it.key }.forEach { (key, value) ->
-            val typeName = when (value) {
-                is Int -> "Int"
-                is Long -> "Long"
-                is Float -> "Float"
-                is Double -> "Double"
-                is Boolean -> "Boolean"
-                is Byte -> "Byte"
-                is Short -> "Short"
-                is String -> "String"
-                is ByteArray -> "ByteArray[${(value as ByteArray).size}]"
-                is IntArray -> "IntArray[${(value as IntArray).size}]"
-                is List<*> -> "Array[${(value as List<*>).size}]"
-                is Map<*, *> -> "Map[${(value as Map<*, *>).size}]"
-                null -> "Null"
-                else -> value::class.simpleName ?: "Unknown"
-            }
-
-            val displayValue = when (value) {
-                is String -> "\"$value\""
-                is Float -> String.format("%.3f", value)
-                is Double -> String.format("%.3f", value)
-                is ByteArray -> "[${value.take(8).joinToString(",") { "%02X".format(it) }}${if (value.size > 8) "..." else ""}]"
-                null -> "null"
-                else -> value.toString()
-            }
-
-            sb.appendLine("  key=$key\ttype=$typeName\tvalue=$displayValue")
-        }
-
-        if (logQueue.size < MAX_QUEUE_SIZE) {
-            logQueue.add(sb.toString())
-        }
-    }
-
-    fun logDiscovery(eventName: String, objectId: Int, params: Map<Int, Any?>) {
-        val timestamp = dateFormat.format(Date())
-        val sb = StringBuilder()
-        sb.appendLine("[$timestamp] DISCOVERY FAILED $eventName objectId=$objectId")
-        sb.appendLine("  Plan A and Plan B failed. Dumping all params:")
-
-        params.entries.sortedBy { it.key }.forEach { (key, value) ->
-            val typeName = when (value) {
-                is Int -> "Int"
-                is Float -> "Float"
-                is String -> "String"
-                is Boolean -> "Boolean"
-                is Byte -> "Byte"
-                null -> "Null"
-                else -> value::class.simpleName ?: "Unknown"
-            }
-            val displayValue = when (value) {
-                is String -> "\"$value\""
-                is Float -> String.format("%.3f", value)
-                null -> "null"
-                else -> value.toString()
-            }
-            sb.appendLine("  key=$key\ttype=$typeName\tvalue=$displayValue")
-        }
-
-        if (logQueue.size < MAX_QUEUE_SIZE) {
-            logQueue.add(sb.toString())
-        }
-    }
-
-    fun logUnknownEvent(eventCode: Int, params: Map<Int, Any?>) {
-        val timestamp = dateFormat.format(Date())
-        val sb = StringBuilder()
-        sb.appendLine("[$timestamp] UNKNOWN EVENT code=$eventCode")
-        sb.appendLine("  Params: ${params.entries.joinToString(", ") { "${it.key}=${it.value}" }}")
-
-        if (logQueue.size < MAX_QUEUE_SIZE) {
-            logQueue.add(sb.toString())
-        }
-    }
-
-    fun logUnknownType(typeCode: Int, context: String) {
-        val timestamp = dateFormat.format(Date())
-        val entry = "[$timestamp] UNKNOWN TYPE code=0x%02X (%d) context=$context".format(typeCode, typeCode)
-
-        if (logQueue.size < MAX_QUEUE_SIZE) {
-            logQueue.add(entry)
-        }
-    }
-
-    fun getAllLogs(): String {
-        return inMemoryBuffer.joinToString("\n")
-    }
-
-    fun getRecentLogs(count: Int = 50): String {
-        val list = inMemoryBuffer.toList()
-        val start = maxOf(0, list.size - count)
-        return list.subList(start, list.size).joinToString("\n")
-    }
-
-    fun clear() {
-        inMemoryBuffer.clear()
-        logQueue.clear()
-        eventOccurrenceCount.clear()
-        notifyListeners()
-    }
-
-    fun getLogFile(): File? = logFile
-
+    
+    /**
+     * Get log file path
+     */
     fun getLogFilePath(): String? = logFile?.absolutePath
+    
+    /**
+     * Get event count
+     */
+    fun getEventCount(): Long = eventCounter.get()
+    
+    /**
+     * Clear log file
+     */
+    fun clearLog() {
+        try {
+            writer?.close()
+            logFile?.delete()
+            writer = if (logFile != null) PrintWriter(FileWriter(logFile, false)) else null
+            eventCounter.set(0)
+            Log.i(TAG, "Log cleared")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to clear log: ${e.message}")
+        }
+    }
+    
+    // Extension function for ByteArray to hex string
+    private fun ByteArray.toHexString(): String {
+        return this.joinToString("") { "%02X".format(it) }
+    }
 }
+
+/**
+ * Log entry data class
+ */
+private data class LogEntry(
+    val timestamp: Long,
+    val eventName: String,
+    val params: Map<Int, Any?>,
+    val rawHex: String = "",
+    val description: String = ""
+)
