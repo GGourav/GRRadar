@@ -1,227 +1,306 @@
 package com.grradar.overlay
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
+import android.annotation.SuppressLint
 import android.app.Service
+import android.content.Context
 import android.content.Intent
-import android.graphics.Color
 import android.graphics.PixelFormat
-import android.os.Handler
+import android.os.Build
 import android.os.IBinder
-import android.os.Looper
+import android.util.Log
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
-import android.widget.TextView
-import com.grradar.MainActivity
-import com.grradar.R
-import com.grradar.logger.DiscoveryLogger
-import com.grradar.vpn.AlbionVpnService
+import com.grradar.data.EntityStore
+import com.grradar.model.RadarEntity
+import java.util.concurrent.CopyOnWriteArrayList
 
+/**
+ * Radar Overlay Service - Displays the radar as a floating overlay
+ * 
+ * Uses WindowManager to draw over other apps (including Albion Online).
+ * Requires SYSTEM_ALERT_WINDOW permission.
+ */
 class RadarOverlayService : Service() {
 
     companion object {
-        const val ACTION_START = "com.grradar.overlay.START"
-        const val ACTION_STOP = "com.grradar.overlay.STOP"
-        private const val CHANNEL_ID = "grradar_overlay_channel"
-        private const val NOTIFICATION_ID = 1002
-        private const val UPDATE_INTERVAL_MS = 500L
+        private const val TAG = "RadarOverlayService"
+        private const val DEFAULT_RADAR_SIZE = 300 // pixels
+        private const val DEFAULT_SCALE = 2.0f // world units per pixel
+        private const val UPDATE_INTERVAL_MS = 50L // 20 FPS
+
+        @Volatile
+        private var isRunning = false
+
+        // Listener interface for radar events
+        interface RadarListener {
+            fun onEntityAdded(entity: RadarEntity)
+            fun onEntityRemoved(id: Int)
+            fun onEntityUpdated(entity: RadarEntity)
+            fun onLocalPlayerMoved(x: Float, y: Float)
+            fun onZoneChanged(zoneName: String)
+        }
+
+        private val listeners = CopyOnWriteArrayList<RadarListener>()
+
+        fun addListener(listener: RadarListener) {
+            listeners.add(listener)
+            Log.i(TAG, "Listener added, count: ${listeners.size}")
+        }
+
+        fun removeListener(listener: RadarListener) {
+            listeners.remove(listener)
+            Log.i(TAG, "Listener removed, count: ${listeners.size}")
+        }
+
+        fun isRunning(): Boolean = isRunning
     }
 
+    // Window manager and views
     private var windowManager: WindowManager? = null
-    private var overlayView: View? = null
-    private var tvPc: TextView? = null
-    private var tvPca: TextView? = null
-    private var tvEntity: TextView? = null
-    private var tvLog: TextView? = null
-    private var isRunning = false
+    private var radarContainer: FrameLayout? = null
+    private var radarView: RadarSurfaceView? = null
 
-    private val handler = Handler(Looper.getMainLooper())
+    // Entity store reference
+    private var entityStore: EntityStore? = null
 
-    private val updateRunnable = object : Runnable {
-        override fun run() {
-            updateStats()
-            if (isRunning) {
-                handler.postDelayed(this, UPDATE_INTERVAL_MS)
-            }
-        }
-    }
+    // Radar configuration
+    private var radarSize = DEFAULT_RADAR_SIZE
+    private var radarScale = DEFAULT_SCALE
+    private var radarX = 0
+    private var radarY = 0
 
-    private val logListener: (String) -> Unit = { logs ->
-        handler.post {
-            tvLog?.text = logs.takeLast(2000)
-        }
-    }
+    // Render thread
+    private var renderThread: Thread? = null
+    private val shouldRender = AtomicBoolean(true)
 
     override fun onCreate() {
         super.onCreate()
-        createNotificationChannel()
+        Log.i(TAG, "Overlay Service created")
+        
+        windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.i(TAG, "Overlay Service starting...")
+
+        if (radarContainer == null) {
+            createOverlay()
+        }
+
+        isRunning = true
+        
+        return START_STICKY
+    }
+
+    /**
+     * Create the overlay window
+     */
+    @SuppressLint("ClickableViewAccessibility")
+    private fun createOverlay() {
+        try {
+            // Window layout params
+            val layoutType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            } else {
+                @Suppress("DEPRECATION")
+                WindowManager.LayoutParams.TYPE_PHONE
+            }
+
+            val params = WindowManager.LayoutParams(
+                radarSize,
+                radarSize,
+                layoutType,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                x = radarX
+                y = radarY
+            }
+
+            // Create container
+            radarContainer = FrameLayout(this)
+
+            // Create radar surface view
+            radarView = RadarSurfaceView(this).apply {
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            }
+            radarContainer?.addView(radarView)
+
+            // Add touch listener for dragging
+            var lastX = 0
+            var lastY = 0
+            var isDragging = false
+
+            radarContainer?.setOnTouchListener { _, event ->
+                when (event.action) {
+                    MotionEvent.ACTION_DOWN -> {
+                        lastX = event.rawX.toInt()
+                        lastY = event.rawY.toInt()
+                        isDragging = false
+                        true
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val dx = event.rawX.toInt() - lastX
+                        val dy = event.rawY.toInt() - lastY
+
+                        if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
+                            isDragging = true
+                        }
+
+                        if (isDragging) {
+                            params.x += dx
+                            params.y += dy
+                            windowManager?.updateViewLayout(radarContainer, params)
+                        }
+
+                        lastX = event.rawX.toInt()
+                        lastY = event.rawY.toInt()
+                        true
+                    }
+                    else -> false
+                }
+            }
+
+            // Add to window manager
+            windowManager?.addView(radarContainer, params)
+
+            // Start render thread
+            startRenderThread()
+
+            Log.i(TAG, "Overlay created successfully")
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to create overlay: ${e.message}")
+        }
+    }
+
+    /**
+     * Start the render thread
+     */
+    private fun startRenderThread() {
+        shouldRender.set(true)
+        
+        renderThread = Thread {
+            Log.i(TAG, "Render thread started")
+
+            while (shouldRender.get()) {
+                try {
+                    // Update radar view
+                    radarView?.refresh()
+                    radarView?.postInvalidate()
+
+                    // Notify listeners
+                    entityStore?.let { store ->
+                        val pos = store.getLocalPlayerPosition()
+                        listeners.forEach { listener ->
+                            listener.onLocalPlayerMoved(pos.first, pos.second)
+                        }
+                    }
+
+                    Thread.sleep(UPDATE_INTERVAL_MS)
+
+                } catch (e: Exception) {
+                    if (e !is InterruptedException) {
+                        Log.w(TAG, "Render error: ${e.message}")
+                    }
+                }
+            }
+
+            Log.i(TAG, "Render thread stopped")
+        }
+        renderThread?.start()
+    }
+
+    /**
+     * Set the entity store for rendering
+     */
+    fun setEntityStore(store: EntityStore) {
+        entityStore = store
+        radarView?.setEntityStore(store)
+    }
+
+    /**
+     * Update radar configuration
+     */
+    fun updateConfig(size: Int, scale: Float) {
+        radarSize = size
+        radarScale = scale
+
+        radarView?.setScale(scale)
+
+        // Update window size
+        radarContainer?.let { container ->
+            val params = container.layoutParams as WindowManager.LayoutParams
+            params.width = size
+            params.height = size
+            windowManager?.updateViewLayout(container, params)
+        }
+    }
+
+    /**
+     * Remove the overlay
+     */
+    private fun removeOverlay() {
+        Log.i(TAG, "Removing overlay...")
+
+        shouldRender.set(false)
+        renderThread?.interrupt()
+        renderThread?.join(1000)
+        renderThread = null
+
+        try {
+            radarContainer?.let {
+                windowManager?.removeView(it)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error removing overlay: ${e.message}")
+        }
+
+        radarContainer = null
+        radarView = null
+        isRunning = false
+    }
+
+    override fun onDestroy() {
+        Log.i(TAG, "Overlay Service destroying...")
+        removeOverlay()
+        listeners.clear()
+        super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_START -> {
-                if (!isRunning) {
-                    startForeground(NOTIFICATION_ID, createNotification())
-                    showOverlay()
-                    startStatsUpdate()
-                }
-            }
-            ACTION_STOP -> {
-                stopStatsUpdate()
-                hideOverlay()
-                stopSelf()
-            }
-        }
-        return START_STICKY
+    /**
+     * Show or hide the radar
+     */
+    fun setVisible(visible: Boolean) {
+        radarContainer?.visibility = if (visible) View.VISIBLE else View.GONE
     }
 
-    private fun createNotificationChannel() {
-        val channel = NotificationChannel(
-            CHANNEL_ID,
-            "GRRadar Overlay Service",
-            NotificationManager.IMPORTANCE_LOW
-        ).apply {
-            description = "Radar overlay display service"
-        }
-        val notificationManager = getSystemService(NotificationManager::class.java)
-        notificationManager.createNotificationChannel(channel)
+    /**
+     * Check if overlay is visible
+     */
+    fun isVisible(): Boolean {
+        return radarContainer?.visibility == View.VISIBLE
+    }
+}
+
+private class AtomicBoolean(initialValue: Boolean) {
+    @Volatile
+    private var value: Boolean = initialValue
+
+    fun set(newValue: Boolean) {
+        value = newValue
     }
 
-    private fun createNotification(): Notification {
-        val intent = Intent(this, MainActivity::class.java)
-        val pendingIntent = PendingIntent.getActivity(
-            this, 0, intent,
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-
-        return Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("GRRadar Overlay Active")
-            .setContentText("Radar overlay is running")
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentIntent(pendingIntent)
-            .setOngoing(true)
-            .build()
-    }
-
-    private fun showOverlay() {
-        if (overlayView != null) return
-
-        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-
-        val params = WindowManager.LayoutParams(
-            500,
-            400,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = 50
-            y = 100
-        }
-
-        overlayView = FrameLayout(this).apply {
-            setBackgroundColor(0xDD000000.toInt())
-            setPadding(12, 12, 12, 12)
-
-            val container = FrameLayout(this@RadarOverlayService)
-
-            tvPc = TextView(this@RadarOverlayService).apply {
-                text = "PC: 0"
-                textSize = 13f
-                setTextColor(Color.CYAN)
-                layoutParams = FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.WRAP_CONTENT,
-                    FrameLayout.LayoutParams.WRAP_CONTENT
-                ).apply { topMargin = 0 }
-            }
-            container.addView(tvPc)
-
-            tvPca = TextView(this@RadarOverlayService).apply {
-                text = "PCA: 0"
-                textSize = 13f
-                setTextColor(Color.GREEN)
-                layoutParams = FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.WRAP_CONTENT,
-                    FrameLayout.LayoutParams.WRAP_CONTENT
-                ).apply { topMargin = 28 }
-            }
-            container.addView(tvPca)
-
-            tvEntity = TextView(this@RadarOverlayService).apply {
-                text = "Entity: 0"
-                textSize = 13f
-                setTextColor(Color.YELLOW)
-                layoutParams = FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.WRAP_CONTENT,
-                    FrameLayout.LayoutParams.WRAP_CONTENT
-                ).apply { topMargin = 56 }
-            }
-            container.addView(tvEntity)
-
-            tvLog = TextView(this@RadarOverlayService).apply {
-                text = "Logs will appear here..."
-                textSize = 10f
-                setTextColor(Color.WHITE)
-                maxLines = 15
-                layoutParams = FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.WRAP_CONTENT
-                ).apply { topMargin = 90 }
-            }
-            container.addView(tvLog)
-
-            addView(container)
-        }
-
-        windowManager?.addView(overlayView, params)
-        isRunning = true
-
-        DiscoveryLogger.addListener(logListener)
-        DiscoveryLogger.i("Overlay shown")
-    }
-
-    private fun startStatsUpdate() {
-        handler.post(updateRunnable)
-    }
-
-    private fun stopStatsUpdate() {
-        handler.removeCallbacks(updateRunnable)
-    }
-
-    private fun updateStats() {
-        tvPc?.text = "PC: ${AlbionVpnService.packetCount.get()}"
-        tvPca?.text = "PCA: ${AlbionVpnService.albionCount.get()}"
-        tvEntity?.text = "Entity: ${AlbionVpnService.entityCount}"
-    }
-
-    private fun hideOverlay() {
-        DiscoveryLogger.removeListener(logListener)
-
-        overlayView?.let {
-            windowManager?.removeView(it)
-            overlayView = null
-        }
-        tvPc = null
-        tvPca = null
-        tvEntity = null
-        tvLog = null
-        isRunning = false
-
-        DiscoveryLogger.i("Overlay hidden")
-    }
-
-    override fun onDestroy() {
-        stopStatsUpdate()
-        hideOverlay()
-        super.onDestroy()
-    }
+    fun get(): Boolean = value
 }
