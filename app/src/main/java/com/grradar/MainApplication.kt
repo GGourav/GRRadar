@@ -1,8 +1,6 @@
 package com.grradar
 
-import android.app.Application
-import android.content.Context
-import androidx.multidex.MultiDex
+import androidx.multidex.MultiDexApplication
 import com.grradar.data.IdMapRepository
 import com.grradar.logger.DiscoveryLogger
 
@@ -10,16 +8,11 @@ import com.grradar.logger.DiscoveryLogger
  * Main Application class
  * 
  * Handles:
- * - MultiDex support
+ * - MultiDex support (via MultiDexApplication base class)
  * - IdMapRepository initialization
  * - DiscoveryLogger startup
  */
-class MainApplication : Application() {
-
-    override fun attachBaseContext(base: Context) {
-        super.attachBaseContext(base)
-        MultiDex.install(this)
-    }
+class MainApplication : MultiDexApplication() {
 
     override fun onCreate() {
         super.onCreate()
