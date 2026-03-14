@@ -36,6 +36,10 @@ class AlbionVpnService : VpnService() {
         private const val TARGET_PACKAGE = "com.albiononline"
         private const val PHOTON_PORT = 5056
 
+        // Intent actions
+        const val ACTION_START = "com.grradar.vpn.ACTION_START"
+        const val ACTION_STOP = "com.grradar.vpn.ACTION_STOP"
+
         @Volatile
         private var isRunning = false
 
@@ -69,8 +73,16 @@ class AlbionVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.i(TAG, "VPN Service starting...")
         
-        if (!shouldStop.get() && vpnInterface == null) {
-            startVpn()
+        when (intent?.action) {
+            ACTION_START -> {
+                if (!shouldStop.get() && vpnInterface == null) {
+                    startVpn()
+                }
+            }
+            ACTION_STOP -> {
+                stopVpn()
+                stopSelf()
+            }
         }
         
         return START_STICKY
@@ -146,8 +158,7 @@ class AlbionVpnService : VpnService() {
 
                 // IPv4 header parsing
                 val ihl = buffer.get().toInt() and 0x0F
-                buffer.position(12) // Skip to src/dst addresses
-                
+                val totalLength = buffer.short.toInt() and 0xFFFF
                 val protocol = buffer.get(9).toInt() and 0xFF
 
                 // Only process UDP packets
