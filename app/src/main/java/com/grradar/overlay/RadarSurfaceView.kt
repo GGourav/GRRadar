@@ -4,21 +4,22 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.view.SurfaceView
+import android.view.View
 import com.grradar.data.EntityStore
 import com.grradar.model.*
 
 /**
- * Radar Surface View - Custom view for rendering radar entities
+ * Radar View - Custom view for rendering radar entities
  * 
  * Draws colored dots on a circular radar display centered on local player.
+ * Uses regular View (not SurfaceView) for proper overlay rendering.
  */
-class RadarSurfaceView(context: Context) : SurfaceView(context) {
+class RadarSurfaceView(context: Context) : View(context) {
 
     companion object {
         private const val TAG = "RadarSurfaceView"
         private const val DEFAULT_SCALE = 2.0f
-        private const val DEFAULT_RANGE = 200.0f // world units visible in each direction
+        private const val DEFAULT_RANGE = 200.0f
     }
 
     // Entity data
@@ -34,13 +35,13 @@ class RadarSurfaceView(context: Context) : SurfaceView(context) {
 
     // Paints
     private val backgroundPaint = Paint().apply {
-        color = Color.parseColor("#80000000") // Semi-transparent black
+        color = Color.parseColor("#CC000000") // Darker background
         style = Paint.Style.FILL
         isAntiAlias = true
     }
 
     private val borderPaint = Paint().apply {
-        color = Color.parseColor("#40FFFFFF") // Semi-transparent white
+        color = Color.parseColor("#80FFFFFF") // More visible border
         style = Paint.Style.STROKE
         strokeWidth = borderThickness
         isAntiAlias = true
@@ -54,21 +55,18 @@ class RadarSurfaceView(context: Context) : SurfaceView(context) {
 
     private val textPaint = Paint().apply {
         color = Color.WHITE
-        textSize = 10f
+        textSize = 12f
         isAntiAlias = true
+        setShadowLayer(2f, 1f, 1f, Color.BLACK)
     }
 
     // Entity paints by type
     private val entityPaints = mutableMapOf<EntityType, Paint>()
 
     init {
-        setZOrderOnTop(true)
         initPaints()
     }
 
-    /**
-     * Initialize paint colors for each entity type
-     */
     private fun initPaints() {
         EntityType.entries.forEach { type ->
             entityPaints[type] = Paint().apply {
@@ -83,39 +81,32 @@ class RadarSurfaceView(context: Context) : SurfaceView(context) {
         }
     }
 
-    /**
-     * Set the entity store for rendering
-     */
     fun setEntityStore(store: EntityStore) {
         entityStore = store
     }
 
-    /**
-     * Set the world-to-screen scale
-     */
     fun setScale(newScale: Float) {
         scale = newScale
     }
 
-    /**
-     * Set radar display options
-     */
     fun setDisplayOptions(circle: Boolean, border: Boolean) {
         showCircle = circle
         showBorder = border
     }
 
-    override fun draw(canvas: Canvas) {
-        super.draw(canvas)
-
-        val store = entityStore ?: return
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        
         val width = width.toFloat()
         val height = height.toFloat()
+        
+        if (width <= 0 || height <= 0) return
+        
         val centerX = width / 2
         val centerY = height / 2
         val radius = (Math.min(width, height) / 2) - borderThickness
 
-        // Draw background
+        // Draw background circle
         if (showCircle) {
             canvas.drawCircle(centerX, centerY, radius, backgroundPaint)
         } else {
@@ -137,6 +128,16 @@ class RadarSurfaceView(context: Context) : SurfaceView(context) {
             }
         }
 
+        // Get entity store
+        val store = entityStore
+        if (store == null) {
+            // Draw "No Data" text if no store
+            canvas.drawText("Waiting for data...", centerX - 40, centerY, textPaint)
+            // Draw self (center dot) anyway
+            canvas.drawCircle(centerX, centerY, selfDotSize, selfPaint)
+            return
+        }
+
         // Get local player position
         val (localX, localY) = store.getLocalPlayerPosition()
 
@@ -145,17 +146,16 @@ class RadarSurfaceView(context: Context) : SurfaceView(context) {
         val rangePixels = radius
 
         entities.forEach { entity ->
-            // Convert world coordinates to screen coordinates
             val dx = (entity.worldX - localX) * scale
             val dy = (entity.worldY - localY) * scale
 
-            // Canvas Y is inverted (0 at top)
             val screenX = centerX + dx
             val screenY = centerY - dy
 
-            // Check if within radar bounds
-            val distanceFromCenter = Math.sqrt(((screenX - centerX) * (screenX - centerX) + 
-                                               (screenY - centerY) * (screenY - centerY)).toDouble())
+            val distanceFromCenter = Math.sqrt(
+                ((screenX - centerX) * (screenX - centerX) + 
+                 (screenY - centerY) * (screenY - centerY)).toDouble()
+            )
             
             if (distanceFromCenter <= rangePixels) {
                 drawEntity(canvas, entity, screenX, screenY)
@@ -166,13 +166,9 @@ class RadarSurfaceView(context: Context) : SurfaceView(context) {
         canvas.drawCircle(centerX, centerY, selfDotSize, selfPaint)
     }
 
-    /**
-     * Draw a single entity on the canvas
-     */
     private fun drawEntity(canvas: Canvas, entity: RadarEntity, x: Float, y: Float) {
         val paint = entityPaints[entity.type] ?: return
 
-        // Size based on entity type - explicitly typed as Float
         val size: Float = when {
             entity.isBoss -> entityDotSize * 2f
             entity.isElite -> entityDotSize * 1.5f
@@ -180,7 +176,6 @@ class RadarSurfaceView(context: Context) : SurfaceView(context) {
             else -> entityDotSize
         }
 
-        // Draw main dot
         canvas.drawCircle(x, y, size, paint)
 
         // Draw enchantment ring for resources
@@ -209,9 +204,6 @@ class RadarSurfaceView(context: Context) : SurfaceView(context) {
         }
     }
 
-    /**
-     * Force redraw
-     */
     fun refresh() {
         invalidate()
     }
