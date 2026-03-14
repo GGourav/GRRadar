@@ -1,6 +1,6 @@
 {
-  "version": "2026-03-14-v1",
-  "comment": "Photon param key mappings. Update after each Albion patch.",
+  "version": "2026-03-14-v2",
+  "comment": "Complete Photon param key mappings and entity classification patterns for GRRadar. Based on deep analysis of ao-bin-dumps (3756 unique mob IDs) and Albion Wiki.",
 
   "common": {
     "objectIdKey": 0,
@@ -9,7 +9,7 @@
   },
 
   "joinFinished": {
-    "comment": "LOCAL PLAYER zone entry event",
+    "comment": "LOCAL PLAYER zone entry event - fires BEFORE NewCharacter. CRITICAL for radar center.",
     "localObjectIdKey": 0,
     "posXKey": 8,
     "posYKey": 9
@@ -59,17 +59,302 @@
     "rarityKey": 7
   },
 
-  "knownPrefixes": {
-    "fiber": ["FIBER", "COTTON", "HEMP", "FLAX", "SILK"],
-    "ore": ["ORE", "IRON", "STEEL", "TITANIUM", "RUNITE"],
-    "logs": ["WOOD", "LOG", "BIRCH", "OAK", "CEDAR", "PINE"],
-    "rock": ["ROCK", "STONE", "LIMESTONE", "SANDSTONE", "GRANITE"],
-    "hide": ["HIDE", "LEATHER", "REPTILE", "BEAR", "DIREWOLF"],
-    "crop": ["WHEAT", "CROP", "CARROT", "TURNIP", "CABBAGE"]
-  },
-
   "coordinatePlanB": {
     "minValid": -32768.0,
-    "maxValid": 32768.0
+    "maxValid": 32768.0,
+    "comment": "Float params in this range are treated as world coordinates in Plan B scanner"
+  },
+
+  "entityClassification": {
+    "resources": {
+      "FIBER": {
+        "patterns": ["T[1-8]_FIBER", "FIBER", "COTTON", "HEMP", "FLAX", "SILK", "SPONGE"],
+        "displayName": "Fiber",
+        "color": "#C4B454"
+      },
+      "ORE": {
+        "patterns": ["T[1-8]_ORE", "ORE", "COPPER", "TIN", "IRON", "STEEL", "GOLD", "SILVER_ORE", "TITANIUM", "RUNITE", "METEORITE"],
+        "displayName": "Ore",
+        "color": "#8B4513"
+      },
+      "WOOD": {
+        "patterns": ["T[1-8]_WOOD", "WOOD", "LOG", "BIRCH", "OAK", "CEDAR", "PINE", "FROSTWOOD"],
+        "displayName": "Logs",
+        "color": "#228B22"
+      },
+      "ROCK": {
+        "patterns": ["T[1-8]_ROCK", "T[1-8]_STONE", "ROCK", "STONE", "LIMESTONE", "SANDSTONE", "TRAVERTINE", "GRANITE", "SLATE", "BASALT"],
+        "displayName": "Rock",
+        "color": "#808080",
+        "maxEnchantment": 3
+      },
+      "HIDE": {
+        "patterns": ["T[1-8]_HIDE", "HIDE", "LEATHER", "SKIN"],
+        "displayName": "Hide",
+        "color": "#8B0000"
+      }
+    },
+
+    "crystalMobs": {
+      "CRYSTAL_SPIDER": {
+        "patterns": ["CRYSTALSPIDER", "CRYSTAL_SPIDER", "ARCANE_CRYSTALSPIDER"],
+        "displayName": "Crystal Spider",
+        "color": "#00CED1",
+        "tierRange": [4, 8],
+        "groupSize": "Solo/Duo",
+        "foundIn": "Outlands Black Zones"
+      },
+      "CRYSTAL_COBRA": {
+        "patterns": ["CRYSTALCOBRA", "CRYSTAL_COBRA", "ARCANE_CRYSTALCOBRA"],
+        "displayName": "Crystal Cobra",
+        "color": "#9400D3",
+        "tierRange": [5, 8],
+        "groupSize": "10-man",
+        "foundIn": "Outlands Black Zones",
+        "addedIn": "Version 27.000.1 Horizons"
+      },
+      "CRYSTAL_BEETLE": {
+        "patterns": ["CRYSTALBEETLE", "CRYSTAL_BEETLE", "ARCANE_CRYSTALBEETLE"],
+        "displayName": "Crystal Beetle",
+        "color": "#FFD700",
+        "tierRange": [5, 8],
+        "groupSize": "5-man",
+        "foundIn": "Outlands Black Zones",
+        "addedIn": "Version 27.000.1 Horizons"
+      },
+      "ARCANE_ELEMENTAL": {
+        "patterns": ["ARCANE_ELEMENTAL", "ARCANEELEMENTAL"],
+        "displayName": "Arcane Elemental",
+        "color": "#9932CC"
+      }
+    },
+
+    "mistBosses": {
+      "GRIFFIN": {
+        "patterns": ["MISTS_GRIFFIN", "GRIFFIN"],
+        "displayName": "Griffin",
+        "color": "#FF6600",
+        "tierRange": [4, 8],
+        "spawnCondition": "Uncommon+ Mists only"
+      },
+      "FEY_DRAGON": {
+        "patterns": ["MISTS_FAIRYDRAGON", "FAIRYDRAGON", "FEY_DRAGON"],
+        "displayName": "Fey Dragon",
+        "color": "#FF00FF",
+        "tierRange": [4, 8],
+        "spawnCondition": "Uncommon+ Mists only"
+      },
+      "VEILWEAVER": {
+        "patterns": ["VEILWEAVER", "VEIL_WEAVER"],
+        "displayName": "Veilweaver",
+        "color": "#4B0082",
+        "spawnCondition": "Uncommon+ Mists only"
+      }
+    },
+
+    "mistEntities": {
+      "MIST_WISP": {
+        "patterns": ["MISTS_PORTAL_WISP", "MIST_WISP"],
+        "displayName": "Mist Wisp",
+        "color": "#E6E6FA"
+      },
+      "TURBULENT_WISP": {
+        "patterns": ["TURBULENT_MISTS", "POWERCRYSTAL_WISP"],
+        "displayName": "Turbulent Wisp",
+        "color": "#87CEEB"
+      },
+      "CAGED_WISP": {
+        "patterns": ["CAGEDWISP", "CAGED_WISP", "MISTSCAGEDWISP"],
+        "displayName": "Caged Wisp",
+        "color": "#FF69B4"
+      },
+      "MIST_SPIDER": {
+        "patterns": ["MISTS_SPIDER"],
+        "displayName": "Mist Spider",
+        "color": "#483D8B"
+      }
+    },
+
+    "avalonianEntities": {
+      "AVALONIAN_DRONE": {
+        "patterns": ["AVALON_DRONE", "AVALONIAN_DRONE", "TREASURE_MINION"],
+        "displayName": "Avalonian Drone",
+        "color": "#DAA520"
+      },
+      "TREASURE_DRONE": {
+        "patterns": ["ROAMING_AVALON_TREASURE", "TREASURE_MINION"],
+        "displayName": "Treasure Drone",
+        "color": "#FFD700"
+      }
+    },
+
+    "hideAnimals": {
+      "patterns": ["_HIDE_", "CRITTER_HIDE"],
+      "displayName": "Hide Animal",
+      "color": "#CD853F",
+      "mistsVariants": {
+        "T1": "WOLPERTINGER",
+        "T2": "FEY_FOX",
+        "T3": "FOGLANDS_DOE",
+        "T4": "FOGLANDS_HART",
+        "T5": "GREAT_MYSTIC_OWL",
+        "T6": "MIST_HOUND",
+        "T7": "MISTHIDE_MAULER",
+        "T8": "DRAGONHAWK"
+      },
+      "roadsVariants": {
+        "T1": "SALAMANDER",
+        "T3": "ROADS_STAG",
+        "T4": "ROADS_DIREWOLF",
+        "T5": "BISON",
+        "T6": "ROADS_OWL",
+        "T7": "ROADS_DIREBEAR",
+        "T8": "BASILISK"
+      }
+    },
+
+    "resourceGuardians": {
+      "patterns": ["GUARDIAN_", "CRITTER_FIBER", "CRITTER_ORE", "CRITTER_ROCK", "CRITTER_WOOD", "CRITTER_HIDE"],
+      "displayName": "Resource Guardian",
+      "color": "#32CD32",
+      "note": "Kill then harvest for 2x speed"
+    },
+
+    "factionMobs": {
+      "HERETIC": {
+        "patterns": ["_HERETIC_"],
+        "displayName": "Heretic",
+        "color": "#8B4513"
+      },
+      "MORGANA": {
+        "patterns": ["_MORGANA_"],
+        "displayName": "Morgana",
+        "color": "#4B0082"
+      },
+      "KEEPER": {
+        "patterns": ["_KEEPER_"],
+        "displayName": "Keeper",
+        "color": "#228B22"
+      },
+      "UNDEAD": {
+        "patterns": ["_UNDEAD_"],
+        "displayName": "Undead",
+        "color": "#708090"
+      },
+      "DEMON": {
+        "patterns": ["_DEMON_"],
+        "displayName": "Demon",
+        "color": "#DC143C"
+      },
+      "AVALONIAN": {
+        "patterns": ["_AVALON_"],
+        "displayName": "Avalonian",
+        "color": "#DAA520"
+      }
+    },
+
+    "bossMobs": {
+      "MINIBOSS": {
+        "patterns": ["_MINIBOSS"],
+        "displayName": "Miniboss",
+        "color": "#FF8C00"
+      },
+      "BOSS": {
+        "patterns": ["_BOSS"],
+        "exclusions": ["_MINIBOSS", "_VETERAN_BOSS"],
+        "displayName": "Boss",
+        "color": "#FF4500"
+      },
+      "VETERAN_BOSS": {
+        "patterns": ["_VETERAN_BOSS"],
+        "displayName": "Veteran Boss",
+        "color": "#DC143C"
+      },
+      "ELITE": {
+        "patterns": ["_ELITE"],
+        "displayName": "Elite",
+        "color": "#9932CC"
+      }
+    },
+
+    "specialEntities": {
+      "TREASURE_CHEST": {
+        "patterns": ["TREASURE_CHEST", "LOOT_CHEST"],
+        "displayName": "Treasure",
+        "color": "#FFD700"
+      },
+      "DUNGEON_PORTAL": {
+        "patterns": ["DUNGEON_PORTAL", "DUNGEON_EXIT", "RANDOM_DUNGEON_EXIT"],
+        "displayName": "Dungeon",
+        "color": "#9370DB"
+      },
+      "HELLGATE": {
+        "patterns": ["HELLGATE"],
+        "displayName": "Hellgate",
+        "color": "#FF4500"
+      },
+      "POWER_CRYSTAL": {
+        "patterns": ["POWERCRYSTAL", "POWER_CRYSTAL"],
+        "displayName": "Power Crystal",
+        "color": "#00FFFF"
+      },
+      "SILVER": {
+        "patterns": ["SILVER"],
+        "displayName": "Silver",
+        "color": "#FFEB3B"
+      }
+    }
+  },
+
+  "knownPrefixes": {
+    "fiber": ["T1_FIBER", "T2_FIBER", "T3_FIBER", "T4_FIBER", "T5_FIBER", "T6_FIBER", "T7_FIBER", "T8_FIBER"],
+    "ore": ["T1_ORE", "T2_ORE", "T3_ORE", "T4_ORE", "T5_ORE", "T6_ORE", "T7_ORE", "T8_ORE"],
+    "logs": ["T1_WOOD", "T2_WOOD", "T3_WOOD", "T4_WOOD", "T5_WOOD", "T6_WOOD", "T7_WOOD", "T8_WOOD"],
+    "rock": ["T1_ROCK", "T2_ROCK", "T3_ROCK", "T4_ROCK", "T5_ROCK", "T6_ROCK", "T7_ROCK", "T8_ROCK"],
+    "hide": ["T1_HIDE", "T2_HIDE", "T3_HIDE", "T4_HIDE", "T5_HIDE", "T6_HIDE", "T7_HIDE", "T8_HIDE"],
+    "crystalMobs": ["CRYSTALSPIDER", "CRYSTALCOBRA", "CRYSTALBEETLE"],
+    "avalonianDrones": ["AVALON_DRONE", "AVALONIAN_DRONE"],
+    "mistBosses": ["MISTS_GRIFFIN", "MISTS_FAIRYDRAGON", "VEILWEAVER"]
+  },
+
+  "enchantmentColors": {
+    "0": {"name": "Flat", "ringColor": null},
+    "1": {"name": "Uncommon (.1)", "ringColor": "#00FF00"},
+    "2": {"name": "Rare (.2)", "ringColor": "#0000FF"},
+    "3": {"name": "Exceptional (.3)", "ringColor": "#800080"},
+    "4": {"name": "Pristine (.4)", "ringColor": "#FFD700"}
+  },
+
+  "tierColors": {
+    "1": "#FFFFFF",
+    "2": "#FFFFFF",
+    "3": "#FFFFFF",
+    "4": "#808080",
+    "5": "#00FF00",
+    "6": "#0000FF",
+    "7": "#800080",
+    "8": "#FFD700"
+  },
+
+  "mistRarityColors": {
+    "STANDARD": "#FFFFFF",
+    "UNCOMMON": "#00FF00",
+    "RARE": "#0000FF",
+    "LEGENDARY": "#FFD700"
+  },
+
+  "notes": {
+    "dataSources": [
+      "ao-bin-dumps (github.com/broderickhyman/ao-bin-dumps) - 3756 unique mob IDs",
+      "albiononline.com official wiki and guides",
+      "albiononline2d.com mob database"
+    ],
+    "lastUpdated": "March 2026",
+    "crystalMobsNote": "Crystal Cobra and Crystal Beetle added in Version 27.000.1 (Horizons update, Dec 2025)",
+    "smugglerNote": "Smugglers (Rogue Frontier update Feb 2025) are NPC structures/factions, not hostile mobs",
+    "mistBossSpawnRule": "Mythical creatures (Griffin, Fey Dragon, Veilweaver) ONLY spawn in Uncommon+ Mists, NEVER in Common Mists",
+    "hideAnimalCount": "~40 types including Mists and Roads variants",
+    "resourceMobNote": "Resource Guardians provide 2x faster gathering than static nodes",
+    "cropsExcluded": "Crops (Wheat, Carrot, Turnip, Cabbage, Bean, Potato, Corn, Pumpkin) only grow on personal islands - NOT relevant for open-world radar"
   }
 }
