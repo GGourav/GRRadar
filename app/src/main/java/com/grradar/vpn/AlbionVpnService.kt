@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.net.VpnService
 import android.os.ParcelFileDescriptor
+import android.os.PowerManager
 import android.util.Log
 import com.grradar.MainActivity
 import com.grradar.R
@@ -16,7 +17,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.FileInputStream
-import java.io.FileOutputStream
 import java.nio.ByteBuffer
 
 class AlbionVpnService : VpnService() {
@@ -44,12 +44,35 @@ class AlbionVpnService : VpnService() {
         private const val IP_HEADER_MIN_LENGTH = 20
         private const val UDP_HEADER_LENGTH = 8
         private const val PROTOCOL_UDP = 17
+
+        // Statistics (static for access from overlay)
+        @Volatile
+        var totalPacketCount: Long = 0
+            private set
+
+        @Volatile
+        var albionPacketCount: Long = 0
+            private set
+
+        @Volatile
+        var entityCount: Int = 0
+            private set
+
+        fun incrementEntityCount() {
+            entityCount++
+        }
+
+        fun resetEntityCount() {
+            entityCount = 0
+        }
     }
 
     private var vpnInterface: ParcelFileDescriptor? = null
     private var vpnJob: Job? = null
     private var isRunning = false
-    private var packetCount = 0L
+
+    // CRITICAL: WakeLock to prevent Android from throttling TUN thread
+    private var wakeLock: PowerManager.WakeLock? = null
 
     private val coroutineScope = CoroutineScope(Dispatchers.IO)
 
@@ -63,6 +86,7 @@ class AlbionVpnService : VpnService() {
             ACTION_START, ACTION_CONNECT -> {
                 if (!isRunning) {
                     startForeground(NOTIFICATION_ID, createNotification())
+                    acquireWakeLock()
                     startVpn()
                 }
             }
@@ -103,9 +127,35 @@ class AlbionVpnService : VpnService() {
             .build()
     }
 
+    private fun acquireWakeLock() {
+        val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+        wakeLock = powerManager.newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "GRRadar::TunWakeLock"
+        ).apply {
+            acquire(10 * 60 * 1000L) // 10 minutes max, will re-acquire
+        }
+        Log.i(TAG, "WakeLock acquired")
+    }
+
+    private fun releaseWakeLock() {
+        wakeLock?.let {
+            if (it.isHeld) {
+                it.release()
+            }
+        }
+        wakeLock = null
+        Log.i(TAG, "WakeLock released")
+    }
+
     private fun startVpn() {
         try {
-            // Configure VPN interface
+            // Reset statistics
+            totalPacketCount = 0
+            albionPacketCount = 0
+            entityCount = 0
+
+            // Configure VPN interface - only allow Albion Online
             val builder = Builder()
                 .setSession("GRRadar")
                 .addAddress(TUN_ADDRESS, TUN_PREFIX)
@@ -116,12 +166,15 @@ class AlbionVpnService : VpnService() {
             vpnInterface = builder.establish()
 
             if (vpnInterface == null) {
-                Log.e(TAG, "Failed to establish VPN interface")
+                Log.e(TAG, "Failed to establish VPN interface - user may have denied permission")
                 return
             }
 
             isRunning = true
-            Log.i(TAG, "VPN interface established")
+            Log.i(TAG, "VPN interface established successfully")
+            Log.i(TAG, "TUN Address: $TUN_ADDRESS/$TUN_PREFIX")
+            Log.i(TAG, "MTU: $MTU")
+            Log.i(TAG, "Allowed app: $ALBION_PACKAGE")
 
             // Start packet capture loop
             startPacketCapture()
@@ -137,16 +190,25 @@ class AlbionVpnService : VpnService() {
             val vpnInput = FileInputStream(vpnInterface!!.fileDescriptor)
             val buffer = ByteBuffer.allocate(MTU)
 
-            Log.i(TAG, "Packet capture started")
+            Log.i(TAG, "Packet capture loop started - waiting for Albion traffic...")
+            Log.i(TAG, "Make sure Albion Online is installed and running")
 
             while (isActive && isRunning) {
                 try {
                     // Read packet from TUN interface
                     val length = vpnInput.read(buffer.array())
                     if (length > 0) {
+                        totalPacketCount++
                         buffer.limit(length)
                         processPacket(buffer)
                         buffer.clear()
+
+                        // Re-acquire wake lock periodically
+                        wakeLock?.let {
+                            if (!it.isHeld) {
+                                it.acquire(10 * 60 * 1000L)
+                            }
+                        }
                     }
                 } catch (e: Exception) {
                     if (isRunning) {
@@ -156,7 +218,7 @@ class AlbionVpnService : VpnService() {
                 }
             }
 
-            Log.i(TAG, "Packet capture stopped")
+            Log.i(TAG, "Packet capture loop stopped")
         }
     }
 
@@ -196,6 +258,8 @@ class AlbionVpnService : VpnService() {
 
             // Check if this is Photon traffic (port 5056)
             if (sourcePort == PHOTON_PORT || destPort == PHOTON_PORT) {
+                albionPacketCount++
+                
                 val payloadOffset = udpOffset + UDP_HEADER_LENGTH
                 val payloadLength = buffer.remaining() - payloadOffset
 
@@ -204,11 +268,10 @@ class AlbionVpnService : VpnService() {
                     buffer.position(payloadOffset)
                     buffer.get(payload)
 
-                    packetCount++
-                    
-                    // Log every 100 packets to avoid spam
-                    if (packetCount % 100 == 0L) {
-                        Log.d(TAG, "Captured $packetCount Photon packets")
+                    // Log every 10 Albion packets
+                    if (albionPacketCount % 10 == 0L) {
+                        Log.d(TAG, "PC: $totalPacketCount | PCA: $albionPacketCount | Entity: $entityCount")
+                        Log.d(TAG, "Photon payload size: $payloadLength bytes, srcPort: $sourcePort, dstPort: $destPort")
                     }
 
                     // TODO: Pass to PhotonParser (Step 4)
@@ -230,7 +293,10 @@ class AlbionVpnService : VpnService() {
         vpnInterface?.close()
         vpnInterface = null
 
-        Log.i(TAG, "VPN stopped. Total packets captured: $packetCount")
+        releaseWakeLock()
+
+        Log.i(TAG, "VPN stopped")
+        Log.i(TAG, "Final stats - PC: $totalPacketCount | PCA: $albionPacketCount | Entity: $entityCount")
     }
 
     override fun onDestroy() {
@@ -239,6 +305,7 @@ class AlbionVpnService : VpnService() {
     }
 
     override fun onRevoke() {
+        Log.w(TAG, "VPN permission revoked by user")
         stopVpn()
         super.onRevoke()
     }
