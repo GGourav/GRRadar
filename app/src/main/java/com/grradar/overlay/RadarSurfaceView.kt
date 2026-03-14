@@ -4,11 +4,7 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.Path
-import android.graphics.RectF
-import android.util.Log
 import android.view.SurfaceView
-import android.view.View
 import com.grradar.data.EntityStore
 import com.grradar.model.*
 
@@ -176,10 +172,10 @@ class RadarSurfaceView(context: Context) : SurfaceView(context) {
     private fun drawEntity(canvas: Canvas, entity: RadarEntity, x: Float, y: Float) {
         val paint = entityPaints[entity.type] ?: return
 
-        // Size based on entity type
-        val size = when {
-            entity.isBoss -> entityDotSize * 2
-            entity.isElite -> entityDotSize * 1.5
+        // Size based on entity type - explicitly typed as Float
+        val size: Float = when {
+            entity.isBoss -> entityDotSize * 2f
+            entity.isElite -> entityDotSize * 1.5f
             entity.isResource() -> entityDotSize * 0.8f
             else -> entityDotSize
         }
@@ -201,14 +197,14 @@ class RadarSurfaceView(context: Context) : SurfaceView(context) {
                     strokeWidth = 2f
                     isAntiAlias = true
                 }
-                canvas.drawCircle(x, y, size + 3, ringPaint)
+                canvas.drawCircle(x, y, size + 3f, ringPaint)
             }
         }
 
         // Draw name for players
         if (entity.type == EntityType.PLAYER || entity.type == EntityType.HOSTILE_PLAYER) {
             if (entity.name.isNotEmpty()) {
-                canvas.drawText(entity.name, x + size + 2, y + 4, textPaint)
+                canvas.drawText(entity.name, x + size + 2f, y + 4f, textPaint)
             }
         }
     }
