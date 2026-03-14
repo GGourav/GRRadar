@@ -4,7 +4,6 @@ import android.content.Context
 import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
-import com.google.gson.JsonObject
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.trySendBlocking
@@ -217,7 +216,11 @@ class DiscoveryLogger private constructor() {
             
             when (value) {
                 null -> sb.append("null")
-                is ByteArray -> sb.append("ByteArray[${value.size}] = ${value.take(16).toHexString()}...")
+                is ByteArray -> {
+                    val hexString = value.copyOfRange(0, minOf(16, value.size))
+                        .joinToString("") { "%02X".format(it) }
+                    sb.append("ByteArray[${value.size}] = $hexString...")
+                }
                 is IntArray -> sb.append("IntArray[${value.size}] = ${value.take(16).toList()}")
                 is FloatArray -> sb.append("FloatArray[${value.size}] = ${value.take(16).toList()}")
                 is Array<*> -> {
@@ -320,11 +323,6 @@ class DiscoveryLogger private constructor() {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to clear log: ${e.message}")
         }
-    }
-    
-    // Extension function for ByteArray to hex string
-    private fun ByteArray.toHexString(): String {
-        return this.joinToString("") { "%02X".format(it) }
     }
 }
 
