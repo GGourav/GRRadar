@@ -1,467 +1,582 @@
 package com.grradar.parser
 
+import android.util.Log
 import com.grradar.data.EntityStore
 import com.grradar.data.IdMapRepository
-import com.grradar.logger.DiscoveryLogger
-import com.grradar.model.EntityType
-import com.grradar.model.RadarEntity
-import com.grradar.vpn.AlbionVpnService
+import com.grradar.model.*
 
 /**
- * EventDispatcher - Routes Photon events by name string
- *
- * CRITICAL: Dispatch by event NAME, not integer code.
- * Integer codes shift with patches, but names are stable.
+ * Event Dispatcher - Routes Photon events to entity handlers
+ * 
+ * Uses STRING-BASED dispatch (not integer codes) for patch resilience.
+ * Event name strings are stable across Albion patches.
  */
-class EventDispatcher {
-
-    private val handlerMap = HashMap<String, (Map<Int, Any?>) -> Unit>()
-    private val idMap = IdMapRepository.get()
-
-    init {
-        // Register event handlers
-        handlerMap["JoinFinished"] = ::handleJoinFinished
-        handlerMap["NewCharacter"] = ::handleNewCharacter
-        handlerMap["Leave"] = ::handleLeave
-        handlerMap["Move"] = ::handleMove
-        handlerMap["NewSimpleHarvestableObject"] = ::handleHarvestable
-        handlerMap["NewSimpleHarvestableObjectList"] = ::handleHarvestableList
-        handlerMap["NewHarvestableObject"] = ::handleHarvestable
-        handlerMap["NewMob"] = ::handleMob
-        handlerMap["NewSilverObject"] = ::handleSilver
-        handlerMap["NewLootChest"] = ::handleChest
-        handlerMap["NewTreasureChest"] = ::handleChest
-        handlerMap["NewMistsCagedWisp"] = ::handleMistWisp
-        handlerMap["NewMistsWispSpawn"] = ::handleMistWisp
-        handlerMap["NewRandomDungeonExit"] = ::handleDungeon
-        handlerMap["ChangeCluster"] = ::handleChangeCluster
-        handlerMap["HarvestFinished"] = ::handleHarvestFinished
-        handlerMap["InventoryMoveItem"] = { /* discard */ }
+class EventDispatcher(
+    private val entityStore: EntityStore,
+    private val idMapRepo: IdMapRepository
+) {
+    companion object {
+        private const val TAG = "EventDispatcher"
     }
-
-    fun dispatch(params: Map<Int, Any?>) {
-        // Get event code from params[252]
-        val codeInt = (params[252] as? Number)?.toInt() ?: return
-
-        // Resolve event name from code
-        val eventName = IdMapRepository.resolveEventName(codeInt)
-
-        if (eventName == null) {
-            DiscoveryLogger.logUnknownEvent(codeInt, params)
+    
+    private val parser = PhotonParser(object : PhotonParser.PhotonCallback {
+        override fun onEvent(eventName: String, params: Map<Int, Any?>) {
+            dispatchEvent(eventName, params)
+        }
+        
+        override fun onError(error: String) {
+            Log.e(TAG, "Photon error: $error")
+        }
+    })
+    
+    // Event name constants (stable across patches)
+    object Events {
+        const val JOIN_FINISHED = "JoinFinished"
+        const val NEW_CHARACTER = "NewCharacter"
+        const val NEW_MOB = "NewMob"
+        const val NEW_SIMPLE_HARVESTABLE_OBJECT = "NewSimpleHarvestableObject"
+        const val NEW_SIMPLE_HARVESTABLE_OBJECT_LIST = "NewSimpleHarvestableObjectList"
+        const val NEW_HARVESTABLE_OBJECT = "NewHarvestableObject"
+        const val NEW_SILVER_OBJECT = "NewSilverObject"
+        const val NEW_SIMPLE_ITEM = "NewSimpleItem"
+        const val NEW_FISHING_ZONE_OBJECT = "NewFishingZoneObject"
+        const val NEW_MISTS_CAGED_WISP = "NewMistsCagedWisp"
+        const val NEW_MISTS_WISP_SPAWN = "NewMistsWispSpawn"
+        const val NEW_MIST_DUNGEON_ROOM_MOB_SOUL = "NewMistDungeonRoomMobSoul"
+        const val NEW_LOOT_CHEST = "NewLootChest"
+        const val NEW_TREASURE_CHEST = "NewTreasureChest"
+        const val NEW_CARRIABLE_OBJECT = "NewCarriableObject"
+        const val NEW_RANDOM_DUNGEON_EXIT = "NewRandomDungeonExit"
+        const val NEW_EXPEDITION_EXIT = "NewExpeditionExit"
+        const val NEW_HELLGATE_EXIT_PORTAL = "NewHellgateExitPortal"
+        const val NEW_MISTS_DUNGEON_EXIT = "NewMistsDungeonExit"
+        const val NEW_PORTAL_ENTRANCE = "NewPortalEntrance"
+        const val NEW_PORTAL_EXIT = "NewPortalExit"
+        const val LEAVE = "Leave"
+        const val MOVE = "Move"
+        const val FORCED_MOVEMENT = "ForcedMovement"
+        const val HARVEST_FINISHED = "HarvestFinished"
+        const val CHANGE_CLUSTER = "ChangeCluster"
+        const val HEALTH_UPDATE = "HealthUpdate"
+        const val MOUNT_HEALTH_UPDATE = "MountHealthUpdate"
+    }
+    
+    /**
+     * Parse raw UDP payload
+     */
+    fun parsePayload(payload: ByteArray) {
+        parser.parse(payload)
+    }
+    
+    /**
+     * Dispatch event by name to appropriate handler
+     */
+    private fun dispatchEvent(eventName: String, params: Map<Int, Any?>) {
+        Log.d(TAG, "Dispatching: $eventName with ${params.size} params")
+        
+        when (eventName) {
+            Events.JOIN_FINISHED -> handleJoinFinished(params)
+            Events.NEW_CHARACTER -> handleNewCharacter(params)
+            Events.NEW_MOB -> handleNewMob(params)
+            Events.NEW_SIMPLE_HARVESTABLE_OBJECT -> handleNewHarvestable(params)
+            Events.NEW_SIMPLE_HARVESTABLE_OBJECT_LIST -> handleHarvestableList(params)
+            Events.NEW_HARVESTABLE_OBJECT -> handleNewHarvestable(params)
+            Events.NEW_SILVER_OBJECT -> handleSilver(params)
+            Events.NEW_MISTS_CAGED_WISP -> handleMistsCagedWisp(params)
+            Events.NEW_MISTS_WISP_SPAWN -> handleMistsWispSpawn(params)
+            Events.NEW_LOOT_CHEST -> handleLootChest(params)
+            Events.NEW_TREASURE_CHEST -> handleTreasureChest(params)
+            Events.NEW_RANDOM_DUNGEON_EXIT -> handleDungeonPortal(params)
+            Events.NEW_MISTS_DUNGEON_EXIT -> handleMistDungeonExit(params)
+            Events.NEW_HELLGATE_EXIT_PORTAL -> handleHellgatePortal(params)
+            Events.LEAVE -> handleLeave(params)
+            Events.MOVE -> handleMove(params)
+            Events.HARVEST_FINISHED -> handleHarvestFinished(params)
+            Events.CHANGE_CLUSTER -> handleChangeCluster(params)
+            Events.HEALTH_UPDATE -> handleHealthUpdate(params)
+            else -> Log.v(TAG, "Unhandled event: $eventName")
+        }
+    }
+    
+    /**
+     * Handle JoinFinished - CRITICAL for local player position
+     * Fires BEFORE NewCharacter when entering a zone
+     */
+    private fun handleJoinFinished(params: Map<Int, Any?>) {
+        val keys = idMapRepo.getJoinFinishedKeys()
+        
+        val objectId = parser.getInt(params, keys.localObjectIdKey)
+        val posX = parser.getFloat(params, keys.posXKey)
+        val posY = parser.getFloat(params, keys.posYKey)
+        
+        // Fallback: Scan for coordinates if key lookup fails
+        if (posX == 0f && posY == 0f) {
+            val planB = idMapRepo.getCoordinatePlanB()
+            val coords = parser.scanForCoordinates(
+                params, 
+                planB.minValid.toFloat(), 
+                planB.maxValid.toFloat()
+            )
+            if (coords != null) {
+                entityStore.setLocalPlayerPosition(coords.first, coords.second)
+            }
+        } else {
+            entityStore.setLocalPlayerPosition(posX, posY)
+        }
+        
+        entityStore.setLocalPlayerId(objectId)
+        
+        Log.i(TAG, "JoinFinished: localPlayerId=$objectId, pos=($posX, $posY)")
+    }
+    
+    /**
+     * Handle NewCharacter - Player spawn event
+     */
+    private fun handleNewCharacter(params: Map<Int, Any?>) {
+        val commonKeys = idMapRepo.getCommonKeys()
+        val playerKeys = idMapRepo.getPlayerKeys()
+        
+        val objectId = parser.getInt(params, commonKeys.objectIdKey)
+        val posX = parser.getFloat(params, commonKeys.posXKey)
+        val posY = parser.getFloat(params, commonKeys.posYKey)
+        val name = parser.getString(params, playerKeys.nameKey)
+        val guild = parser.getString(params, playerKeys.guildKey)
+        val alliance = parser.getString(params, playerKeys.allianceKey)
+        val factionFlagValue = parser.getInt(params, playerKeys.factionFlagKey)
+        val health = parser.getFloat(params, playerKeys.healthKey, 1.0f)
+        
+        // Check if this is the local player
+        val localPlayerId = entityStore.getLocalPlayerId()
+        if (objectId == localPlayerId) {
+            entityStore.setLocalPlayerPosition(posX, posY)
             return
         }
-
-        // Log target events for discovery
-        when (eventName) {
-            "JoinFinished", "NewCharacter" -> {
-                val objectId = getInt(params, idMap.common.objectIdKey) ?: -1
-                DiscoveryLogger.logAllParams(eventName, objectId, params)
+        
+        // Determine if hostile
+        val factionFlag = FactionFlag.fromInt(factionFlagValue)
+        val isHostile = factionFlag == FactionFlag.HOSTILE
+        
+        val entity = RadarEntity(
+            id = objectId,
+            type = if (isHostile) EntityType.HOSTILE_PLAYER else EntityType.PLAYER,
+            worldX = posX,
+            worldY = posY,
+            typeName = "PLAYER",
+            tier = 0,
+            enchantment = Enchantment.NONE,
+            name = name,
+            guildName = guild,
+            allianceName = alliance,
+            factionFlag = factionFlag,
+            health = health
+        )
+        
+        entityStore.putEntity(entity)
+        Log.d(TAG, "NewCharacter: $name (id=$objectId, hostile=$isHostile)")
+    }
+    
+    /**
+     * Handle NewMob - Mob spawn event
+     */
+    private fun handleNewMob(params: Map<Int, Any?>) {
+        val commonKeys = idMapRepo.getCommonKeys()
+        val mobKeys = idMapRepo.getMobKeys()
+        
+        val objectId = parser.getInt(params, commonKeys.objectIdKey)
+        val posX = parser.getFloat(params, commonKeys.posXKey)
+        val posY = parser.getFloat(params, commonKeys.posYKey)
+        val typeName = parser.getString(params, mobKeys.typeNameKey)
+        val tier = parser.getInt(params, mobKeys.tierKey)
+        val enchantValue = parser.getInt(params, mobKeys.enchantKey)
+        val isBoss = parser.getBoolean(params, mobKeys.isBossKey)
+        val health = parser.getFloat(params, mobKeys.healthKey, 1.0f)
+        
+        // Plan B: Scan for tier prefix if typeName not found
+        val actualTypeName = if (typeName.isEmpty()) {
+            parser.scanForTierPrefix(params) ?: ""
+        } else {
+            typeName
+        }
+        
+        // Plan B: Scan for coordinates if pos not found
+        var actualX = posX
+        var actualY = posY
+        if (posX == 0f && posY == 0f) {
+            val planB = idMapRepo.getCoordinatePlanB()
+            val coords = parser.scanForCoordinates(
+                params,
+                planB.minValid.toFloat(),
+                planB.maxValid.toFloat()
+            )
+            if (coords != null) {
+                actualX = coords.first
+                actualY = coords.second
             }
-            "Move" -> {
-                // Only log first 5 Move events
-                val count = moveCount.incrementAndGet()
-                if (count <= 5) {
-                    val objectId = getInt(params, idMap.common.objectIdKey) ?: -1
-                    DiscoveryLogger.logAllParams(eventName, objectId, params)
+        }
+        
+        // Extract tier and enchantment from typeName
+        val actualTier = if (tier > 0) tier else idMapRepo.extractTier(actualTypeName)
+        val actualEnchant = if (enchantValue > 0) {
+            Enchantment.fromInt(enchantValue)
+        } else {
+            idMapRepo.extractEnchantment(actualTypeName)
+        }
+        
+        // Classify entity type
+        val entityType = idMapRepo.classifyEntity(actualTypeName)
+        val mobCategory = idMapRepo.getMobCategory(actualTypeName)
+        
+        val entity = RadarEntity(
+            id = objectId,
+            type = entityType,
+            worldX = actualX,
+            worldY = actualY,
+            typeName = actualTypeName,
+            tier = actualTier,
+            enchantment = actualEnchant,
+            health = health,
+            isBoss = isBoss || entityType == EntityType.BOSS || 
+                     entityType == EntityType.VETERAN_BOSS || 
+                     entityType == EntityType.MINIBOSS,
+            isVeteran = entityType == EntityType.VETERAN_BOSS,
+            isElite = entityType == EntityType.ELITE_MOB,
+            mobCategory = mobCategory
+        )
+        
+        entityStore.putEntity(entity)
+        Log.d(TAG, "NewMob: $actualTypeName (id=$objectId, type=$entityType, tier=$actualTier)")
+    }
+    
+    /**
+     * Handle NewSimpleHarvestableObject - Resource spawn event
+     */
+    private fun handleNewHarvestable(params: Map<Int, Any?>) {
+        val commonKeys = idMapRepo.getCommonKeys()
+        val harvestKeys = idMapRepo.getHarvestableKeys()
+        
+        val objectId = parser.getInt(params, commonKeys.objectIdKey)
+        val posX = parser.getFloat(params, commonKeys.posXKey)
+        val posY = parser.getFloat(params, commonKeys.posYKey)
+        val typeName = parser.getString(params, harvestKeys.typeNameKey)
+        val tier = parser.getInt(params, harvestKeys.tierKey)
+        val enchantValue = parser.getInt(params, harvestKeys.enchantKey)
+        
+        // Plan B: Scan for tier prefix
+        val actualTypeName = if (typeName.isEmpty()) {
+            parser.scanForTierPrefix(params) ?: ""
+        } else {
+            typeName
+        }
+        
+        // Plan B: Scan for coordinates
+        var actualX = posX
+        var actualY = posY
+        if (posX == 0f && posY == 0f) {
+            val planB = idMapRepo.getCoordinatePlanB()
+            val coords = parser.scanForCoordinates(
+                params,
+                planB.minValid.toFloat(),
+                planB.maxValid.toFloat()
+            )
+            if (coords != null) {
+                actualX = coords.first
+                actualY = coords.second
+            }
+        }
+        
+        // Extract tier and enchantment
+        val actualTier = if (tier > 0) tier else idMapRepo.extractTier(actualTypeName)
+        val actualEnchant = if (enchantValue > 0) {
+            Enchantment.fromInt(enchantValue)
+        } else {
+            idMapRepo.extractEnchantment(actualTypeName)
+        }
+        
+        // Classify resource type
+        val entityType = idMapRepo.classifyEntity(actualTypeName)
+        
+        val entity = RadarEntity(
+            id = objectId,
+            type = entityType,
+            worldX = actualX,
+            worldY = actualY,
+            typeName = actualTypeName,
+            tier = actualTier,
+            enchantment = actualEnchant,
+            mobCategory = MobCategory.HARVESTABLE
+        )
+        
+        entityStore.putEntity(entity)
+        Log.d(TAG, "Harvestable: $actualTypeName (id=$objectId, tier=$actualTier, enchant=$actualEnchant)")
+    }
+    
+    /**
+     * Handle batch harvestable list
+     */
+    private fun handleHarvestableList(params: Map<Int, Any?>) {
+        val harvestKeys = idMapRepo.getHarvestableKeys()
+        val list = parser.getList(params, harvestKeys.listKey)
+        
+        if (list != null) {
+            @Suppress("UNCHECKED_CAST")
+            for (item in list) {
+                if (item is Map<*, *>) {
+                    @Suppress("UNCHECKED_CAST")
+                    val itemParams = item as Map<Int, Any?>
+                    handleNewHarvestable(itemParams)
                 }
             }
         }
-
-        // Dispatch to handler
-        val handler = handlerMap[eventName]
-        if (handler != null) {
-            handler.invoke(params)
-        } else {
-            DiscoveryLogger.logDiscovery(eventName, -1, params)
-        }
     }
-
-    // ─── Event Handlers ───────────────────────────────────────────────────────
-
-    private fun handleJoinFinished(params: Map<Int, Any?>) {
-        val localObjectId = getInt(params, idMap.joinFinished.localObjectIdKey)
-        val posX = getFloatWithPlanB(params, idMap.joinFinished.posXKey)
-        val posY = getFloatWithPlanB(params, idMap.joinFinished.posYKey)
-
-        if (localObjectId == null || posX == null || posY == null) {
-            DiscoveryLogger.logDiscovery("JoinFinished", localObjectId ?: -1, params)
-            return
-        }
-
-        DiscoveryLogger.i("JoinFinished: localPlayerId=$localObjectId, pos=($posX, $posY)")
-
-        // Clear entities on zone entry
-        EntityStore.clear()
-        EntityStore.setLocalPlayer(localObjectId, posX, posY)
-
-        AlbionVpnService.resetEntityCount()
-    }
-
-    private fun handleNewCharacter(params: Map<Int, Any?>) {
-        val objectId = getInt(params, idMap.common.objectIdKey) ?: return
-
-        // Check if this is the local player
-        if (objectId == EntityStore.localPlayerId) {
-            // Update local player position
-            val posX = getFloatWithPlanB(params, idMap.common.posXKey)
-            val posY = getFloatWithPlanB(params, idMap.common.posYKey)
-            if (posX != null && posY != null) {
-                EntityStore.setLocalPlayer(objectId, posX, posY)
-            }
-            return
-        }
-
-        val posX = getFloatWithPlanB(params, idMap.common.posXKey)
-        val posY = getFloatWithPlanB(params, idMap.common.posYKey)
-
-        if (posX == null || posY == null) {
-            DiscoveryLogger.logDiscovery("NewCharacter", objectId, params)
-            return
-        }
-
-        val name = getString(params, idMap.player.nameKey) ?: ""
-        val isHostile = getBool(params, idMap.player.factionFlagKey) ?: false
-
-        val entityType = if (isHostile) EntityType.HOSTILE_PLAYER else EntityType.PLAYER
-
-        val entity = RadarEntity(
-            id = objectId,
-            type = entityType,
-            worldX = posX,
-            worldY = posY,
-            typeName = "",
-            tier = 0,
-            enchant = 0,
-            name = name
-        )
-
-        EntityStore.addEntity(entity)
-        AlbionVpnService.incrementEntityCount()
-
-        DiscoveryLogger.d("NewCharacter: $name at ($posX, $posY), hostile=$isHostile")
-    }
-
-    private fun handleLeave(params: Map<Int, Any?>) {
-        val objectId = getInt(params, idMap.common.objectIdKey) ?: return
-        EntityStore.removeEntity(objectId)
-    }
-
-    private fun handleMove(params: Map<Int, Any?>) {
-        val objectId = getInt(params, idMap.common.objectIdKey) ?: return
-        val posX = getFloatWithPlanB(params, idMap.common.posXKey) ?: return
-        val posY = getFloatWithPlanB(params, idMap.common.posYKey) ?: return
-
-        if (objectId == EntityStore.localPlayerId) {
-            EntityStore.setLocalPlayer(objectId, posX, posY)
-            return
-        }
-
-        EntityStore.updatePosition(objectId, posX, posY)
-    }
-
-    private fun handleHarvestable(params: Map<Int, Any?>) {
-        val objectId = getInt(params, idMap.common.objectIdKey) ?: return
-
-        val posX = getFloatWithPlanB(params, idMap.common.posXKey)
-        val posY = getFloatWithPlanB(params, idMap.common.posYKey)
-
-        if (posX == null || posY == null) {
-            DiscoveryLogger.logDiscovery("NewSimpleHarvestableObject", objectId, params)
-            return
-        }
-
-        // Plan A: Get typeName from key
-        var typeName = getString(params, idMap.harvestable.typeNameKey)
-
-        // Plan B: Scan for T1_ through T8_ prefix
-        if (typeName == null) {
-            typeName = planBScanTypeName(params)
-        }
-
-        // Plan C: Log and skip
-        if (typeName == null) {
-            DiscoveryLogger.logDiscovery("NewSimpleHarvestableObject", objectId, params)
-            return
-        }
-
-        val (tier, enchant) = parseTierEnchant(typeName)
-        val entityType = classifyResource(typeName)
-
-        val entity = RadarEntity(
-            id = objectId,
-            type = entityType,
-            worldX = posX,
-            worldY = posY,
-            typeName = typeName,
-            tier = tier,
-            enchant = enchant,
-            name = ""
-        )
-
-        EntityStore.addEntity(entity)
-        AlbionVpnService.incrementEntityCount()
-    }
-
-    private fun handleHarvestableList(params: Map<Int, Any?>) {
-        // Batch harvestable objects
-        val list = params[idMap.harvestable.listKey] as? List<*> ?: return
-
-        list.forEach { item ->
-            if (item is Map<*, *>) {
-                @Suppress("UNCHECKED_CAST")
-                val itemParams = item.mapKeys { it.key as Int } as Map<Int, Any?>
-                handleHarvestable(itemParams)
-            }
-        }
-    }
-
-    private fun handleMob(params: Map<Int, Any?>) {
-        val objectId = getInt(params, idMap.common.objectIdKey) ?: return
-
-        val posX = getFloatWithPlanB(params, idMap.common.posXKey)
-        val posY = getFloatWithPlanB(params, idMap.common.posYKey)
-
-        if (posX == null || posY == null) {
-            DiscoveryLogger.logDiscovery("NewMob", objectId, params)
-            return
-        }
-
-        var typeName = getString(params, idMap.mob.typeNameKey)
-
-        if (typeName == null) {
-            typeName = planBScanTypeName(params)
-        }
-
-        if (typeName == null) {
-            DiscoveryLogger.logDiscovery("NewMob", objectId, params)
-            return
-        }
-
-        val isBoss = getBool(params, idMap.mob.isBossKey) ?: false
-        val (tier, enchant) = parseTierEnchant(typeName)
-        val entityType = classifyMob(typeName, isBoss)
-
-        val entity = RadarEntity(
-            id = objectId,
-            type = entityType,
-            worldX = posX,
-            worldY = posY,
-            typeName = typeName,
-            tier = tier,
-            enchant = enchant,
-            name = ""
-        )
-
-        EntityStore.addEntity(entity)
-        AlbionVpnService.incrementEntityCount()
-    }
-
+    
+    /**
+     * Handle Silver spawn
+     */
     private fun handleSilver(params: Map<Int, Any?>) {
-        val objectId = getInt(params, idMap.common.objectIdKey) ?: return
-        val posX = getFloatWithPlanB(params, idMap.common.posXKey) ?: return
-        val posY = getFloatWithPlanB(params, idMap.common.posYKey) ?: return
-
+        val commonKeys = idMapRepo.getCommonKeys()
+        
+        val objectId = parser.getInt(params, commonKeys.objectIdKey)
+        val posX = parser.getFloat(params, commonKeys.posXKey)
+        val posY = parser.getFloat(params, commonKeys.posYKey)
+        
         val entity = RadarEntity(
             id = objectId,
             type = EntityType.SILVER,
             worldX = posX,
             worldY = posY,
-            typeName = "SILVER",
-            tier = 0,
-            enchant = 0,
-            name = ""
+            typeName = "SILVER"
         )
-
-        EntityStore.addEntity(entity)
-        AlbionVpnService.incrementEntityCount()
+        
+        entityStore.putEntity(entity)
     }
-
-    private fun handleChest(params: Map<Int, Any?>) {
-        val objectId = getInt(params, idMap.common.objectIdKey) ?: return
-        val posX = getFloatWithPlanB(params, idMap.common.posXKey) ?: return
-        val posY = getFloatWithPlanB(params, idMap.common.posYKey) ?: return
-
+    
+    /**
+     * Handle Mists Caged Wisp
+     */
+    private fun handleMistsCagedWisp(params: Map<Int, Any?>) {
+        val commonKeys = idMapRepo.getCommonKeys()
+        
+        val objectId = parser.getInt(params, commonKeys.objectIdKey)
+        val posX = parser.getFloat(params, commonKeys.posXKey)
+        val posY = parser.getFloat(params, commonKeys.posYKey)
+        
         val entity = RadarEntity(
             id = objectId,
-            type = EntityType.CHEST,
+            type = EntityType.CAGED_WISP,
             worldX = posX,
             worldY = posY,
-            typeName = "CHEST",
-            tier = 0,
-            enchant = 0,
-            name = ""
+            typeName = "MISTS_CAGED_WISP"
         )
-
-        EntityStore.addEntity(entity)
-        AlbionVpnService.incrementEntityCount()
+        
+        entityStore.putEntity(entity)
+        Log.d(TAG, "Caged Wisp at ($posX, $posY)")
     }
-
-    private fun handleMistWisp(params: Map<Int, Any?>) {
-        val objectId = getInt(params, idMap.common.objectIdKey) ?: return
-        val posX = getFloatWithPlanB(params, idMap.common.posXKey) ?: return
-        val posY = getFloatWithPlanB(params, idMap.common.posYKey) ?: return
-
+    
+    /**
+     * Handle Mists Wisp Spawn
+     */
+    private fun handleMistsWispSpawn(params: Map<Int, Any?>) {
+        val commonKeys = idMapRepo.getCommonKeys()
+        
+        val objectId = parser.getInt(params, commonKeys.objectIdKey)
+        val posX = parser.getFloat(params, commonKeys.posXKey)
+        val posY = parser.getFloat(params, commonKeys.posYKey)
+        
         val entity = RadarEntity(
             id = objectId,
             type = EntityType.MIST_WISP,
             worldX = posX,
             worldY = posY,
-            typeName = "MIST_WISP",
-            tier = 0,
-            enchant = 0,
-            name = ""
+            typeName = "MISTS_WISP_SPAWN"
         )
-
-        EntityStore.addEntity(entity)
-        AlbionVpnService.incrementEntityCount()
+        
+        entityStore.putEntity(entity)
     }
-
-    private fun handleDungeon(params: Map<Int, Any?>) {
-        val objectId = getInt(params, idMap.common.objectIdKey) ?: return
-        val posX = getFloatWithPlanB(params, idMap.common.posXKey) ?: return
-        val posY = getFloatWithPlanB(params, idMap.common.posYKey) ?: return
-
+    
+    /**
+     * Handle Loot Chest
+     */
+    private fun handleLootChest(params: Map<Int, Any?>) {
+        val commonKeys = idMapRepo.getCommonKeys()
+        
+        val objectId = parser.getInt(params, commonKeys.objectIdKey)
+        val posX = parser.getFloat(params, commonKeys.posXKey)
+        val posY = parser.getFloat(params, commonKeys.posYKey)
+        
+        val entity = RadarEntity(
+            id = objectId,
+            type = EntityType.TREASURE_CHEST,
+            worldX = posX,
+            worldY = posY,
+            typeName = "LOOT_CHEST"
+        )
+        
+        entityStore.putEntity(entity)
+    }
+    
+    /**
+     * Handle Treasure Chest
+     */
+    private fun handleTreasureChest(params: Map<Int, Any?>) {
+        val commonKeys = idMapRepo.getCommonKeys()
+        
+        val objectId = parser.getInt(params, commonKeys.objectIdKey)
+        val posX = parser.getFloat(params, commonKeys.posXKey)
+        val posY = parser.getFloat(params, commonKeys.posYKey)
+        
+        val entity = RadarEntity(
+            id = objectId,
+            type = EntityType.TREASURE_CHEST,
+            worldX = posX,
+            worldY = posY,
+            typeName = "TREASURE_CHEST"
+        )
+        
+        entityStore.putEntity(entity)
+    }
+    
+    /**
+     * Handle Dungeon Portal
+     */
+    private fun handleDungeonPortal(params: Map<Int, Any?>) {
+        val commonKeys = idMapRepo.getCommonKeys()
+        
+        val objectId = parser.getInt(params, commonKeys.objectIdKey)
+        val posX = parser.getFloat(params, commonKeys.posXKey)
+        val posY = parser.getFloat(params, commonKeys.posYKey)
+        
         val entity = RadarEntity(
             id = objectId,
             type = EntityType.DUNGEON_PORTAL,
             worldX = posX,
             worldY = posY,
-            typeName = "DUNGEON",
-            tier = 0,
-            enchant = 0,
-            name = ""
+            typeName = "DUNGEON_PORTAL"
         )
-
-        EntityStore.addEntity(entity)
-        AlbionVpnService.incrementEntityCount()
+        
+        entityStore.putEntity(entity)
     }
-
-    private fun handleChangeCluster(params: Map<Int, Any?>) {
-        DiscoveryLogger.i("ChangeCluster: clearing all entities")
-        EntityStore.clear()
-        EntityStore.localPlayerId = -1
+    
+    /**
+     * Handle Mist Dungeon Exit
+     */
+    private fun handleMistDungeonExit(params: Map<Int, Any?>) {
+        val commonKeys = idMapRepo.getCommonKeys()
+        
+        val objectId = parser.getInt(params, commonKeys.objectIdKey)
+        val posX = parser.getFloat(params, commonKeys.posXKey)
+        val posY = parser.getFloat(params, commonKeys.posYKey)
+        
+        val entity = RadarEntity(
+            id = objectId,
+            type = EntityType.DUNGEON_PORTAL,
+            worldX = posX,
+            worldY = posY,
+            typeName = "MISTS_DUNGEON_EXIT"
+        )
+        
+        entityStore.putEntity(entity)
     }
-
+    
+    /**
+     * Handle Hellgate Portal
+     */
+    private fun handleHellgatePortal(params: Map<Int, Any?>) {
+        val commonKeys = idMapRepo.getCommonKeys()
+        
+        val objectId = parser.getInt(params, commonKeys.objectIdKey)
+        val posX = parser.getFloat(params, commonKeys.posXKey)
+        val posY = parser.getFloat(params, commonKeys.posYKey)
+        
+        val entity = RadarEntity(
+            id = objectId,
+            type = EntityType.HELLGATE,
+            worldX = posX,
+            worldY = posY,
+            typeName = "HELLGATE_PORTAL"
+        )
+        
+        entityStore.putEntity(entity)
+    }
+    
+    /**
+     * Handle Leave - Entity despawn
+     */
+    private fun handleLeave(params: Map<Int, Any?>) {
+        val commonKeys = idMapRepo.getCommonKeys()
+        val objectId = parser.getInt(params, commonKeys.objectIdKey)
+        
+        entityStore.removeEntity(objectId)
+        Log.d(TAG, "Entity left: $objectId")
+    }
+    
+    /**
+     * Handle Move - Entity position update
+     */
+    private fun handleMove(params: Map<Int, Any?>) {
+        val commonKeys = idMapRepo.getCommonKeys()
+        
+        val objectId = parser.getInt(params, commonKeys.objectIdKey)
+        val posX = parser.getFloat(params, commonKeys.posXKey)
+        val posY = parser.getFloat(params, commonKeys.posYKey)
+        
+        // Check if this is the local player
+        val localPlayerId = entityStore.getLocalPlayerId()
+        if (objectId == localPlayerId) {
+            entityStore.setLocalPlayerPosition(posX, posY)
+            return
+        }
+        
+        // Update existing entity
+        val existing = entityStore.getEntity(objectId)
+        if (existing != null) {
+            val updated = existing.copy(
+                worldX = posX,
+                worldY = posY
+            )
+            entityStore.putEntity(updated)
+        }
+    }
+    
+    /**
+     * Handle HarvestFinished - Resource depleted
+     */
     private fun handleHarvestFinished(params: Map<Int, Any?>) {
-        val objectId = getInt(params, idMap.common.objectIdKey) ?: return
-        EntityStore.removeEntity(objectId)
+        val commonKeys = idMapRepo.getCommonKeys()
+        val objectId = parser.getInt(params, commonKeys.objectIdKey)
+        
+        entityStore.removeEntity(objectId)
+        Log.d(TAG, "Resource depleted: $objectId")
     }
-
-    // ─── Helper Methods ───────────────────────────────────────────────────────
-
-    private fun getInt(params: Map<Int, Any?>, key: Int): Int? {
-        val value = params[key] ?: return null
-        return when (value) {
-            is Int -> value
-            is Number -> value.toInt()
-            else -> null
+    
+    /**
+     * Handle ChangeCluster - Zone transition
+     * CRITICAL: Clear all entities on zone change
+     */
+    private fun handleChangeCluster(params: Map<Int, Any?>) {
+        Log.i(TAG, "Zone change detected - clearing entities")
+        
+        // Get zone info if available
+        val zoneName = parser.getString(params, 1, "")
+        
+        entityStore.clearAll()
+        entityStore.setCurrentZone(zoneName)
+    }
+    
+    /**
+     * Handle HealthUpdate - Entity health changed
+     */
+    private fun handleHealthUpdate(params: Map<Int, Any?>) {
+        val commonKeys = idMapRepo.getCommonKeys()
+        val mobKeys = idMapRepo.getMobKeys()
+        
+        val objectId = parser.getInt(params, commonKeys.objectIdKey)
+        val health = parser.getFloat(params, mobKeys.healthKey, 1.0f)
+        
+        // Update existing entity health
+        val existing = entityStore.getEntity(objectId)
+        if (existing != null) {
+            val updated = existing.copy(health = health)
+            entityStore.putEntity(updated)
         }
-    }
-
-    private fun getFloat(params: Map<Int, Any?>, key: Int): Float? {
-        val value = params[key] ?: return null
-        return when (value) {
-            is Float -> value
-            is Number -> value.toFloat()
-            else -> null
-        }
-    }
-
-    private fun getString(params: Map<Int, Any?>, key: Int): String? {
-        return params[key] as? String
-    }
-
-    private fun getBool(params: Map<Int, Any?>, key: Int): Boolean? {
-        val value = params[key] ?: return null
-        return when (value) {
-            is Boolean -> value
-            is Number -> value.toInt() != 0
-            else -> null
-        }
-    }
-
-    private fun getFloatWithPlanB(params: Map<Int, Any?>, key: Int): Float? {
-        // Plan A: Direct lookup
-        val direct = getFloat(params, key)
-        if (direct != null) return direct
-
-        // Plan B: Scan all float params for valid coordinate range
-        val (minValid, maxValid) = IdMapRepository.getCoordinateRange()
-
-        return params.values
-            .filterIsInstance<Float>()
-            .firstOrNull { it >= minValid && it <= maxValid }
-    }
-
-    private fun planBScanTypeName(params: Map<Int, Any?>): String? {
-        val prefixes = listOf("T1_", "T2_", "T3_", "T4_", "T5_", "T6_", "T7_", "T8_")
-
-        return params.values
-            .filterIsInstance<String>()
-            .firstOrNull { v -> prefixes.any { p -> v.startsWith(p, ignoreCase = true) } }
-    }
-
-    private fun parseTierEnchant(name: String): Pair<Int, Int> {
-        val tier = Regex("^T(\\d)_").find(name)
-            ?.groupValues?.get(1)
-            ?.toIntOrNull() ?: 0
-
-        val enchant = when {
-            name.contains("@4") || name.endsWith(".4") -> 4
-            name.contains("@3") || name.endsWith(".3") -> 3
-            name.contains("@2") || name.endsWith(".2") -> 2
-            name.contains("@1") || name.endsWith(".1") -> 1
-            else -> 0
-        }
-
-        return Pair(tier, enchant)
-    }
-
-    private fun classifyResource(name: String): EntityType {
-        val upper = name.uppercase()
-
-        return when {
-            upper.contains("FIBER") || upper.contains("COTTON") ||
-            upper.contains("HEMP") || upper.contains("FLAX") ||
-            upper.contains("SILK") -> EntityType.RESOURCE_FIBER
-
-            upper.contains("ORE") || upper.contains("IRON") ||
-            upper.contains("STEEL") || upper.contains("TITANIUM") ||
-            upper.contains("RUNITE") -> EntityType.RESOURCE_ORE
-
-            upper.contains("WOOD") || upper.contains("LOG") ||
-            upper.contains("BIRCH") || upper.contains("OAK") ||
-            upper.contains("CEDAR") || upper.contains("PINE") -> EntityType.RESOURCE_LOGS
-
-            upper.contains("ROCK") || upper.contains("STONE") ||
-            upper.contains("LIMESTONE") || upper.contains("SANDSTONE") ||
-            upper.contains("GRANITE") -> EntityType.RESOURCE_ROCK
-
-            upper.contains("HIDE") || upper.contains("LEATHER") ||
-            upper.contains("REPTILE") || upper.contains("BEAR") -> EntityType.RESOURCE_HIDE
-
-            upper.contains("WHEAT") || upper.contains("CROP") ||
-            upper.contains("CARROT") || upper.contains("TURNIP") -> EntityType.RESOURCE_CROP
-
-            else -> EntityType.RESOURCE_FIBER // Default
-        }
-    }
-
-    private fun classifyMob(name: String, isBoss: Boolean): EntityType {
-        val upper = name.uppercase()
-
-        return when {
-            isBoss -> EntityType.BOSS_MOB
-            upper.contains("BOSS") || upper.contains("ELDER") ||
-            upper.contains("ANCIENT") || upper.contains("GUARDIAN") ||
-            upper.contains("KEEPER") -> EntityType.BOSS_MOB
-
-            upper.contains("ENCHANTED") || upper.contains("CORRUPT") -> EntityType.ENCHANTED_MOB
-            else -> EntityType.NORMAL_MOB
-        }
-    }
-
-    companion object {
-        private val moveCount = java.util.concurrent.atomic.AtomicInteger(0)
     }
 }
