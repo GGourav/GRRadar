@@ -1,22 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Primary Colors -->
-    <color name="primary">#1976D2</color>
-    <color name="primary_dark">#1565C0</color>
-    
-    <!-- Entity Colors (from handoff spec) -->
-    <color name="mob_normal">#4CAF50</color>
-    <color name="mob_enchanted">#9C27B0</color>
-    <color name="mob_boss">#FF9800</color>
-    <color name="player_self">#00BCD4</color>
-    <color name="player_friendly">#FFFFFF</color>
-    <color name="player_hostile">#F44336</color>
-    <color name="silver">#FFEB3B</color>
-    <color name="chest">#FFC107</color>
-    
-    <!-- Enchant Ring Colors -->
-    <color name="enchant_1">#4CAF50</color>
-    <color name="enchant_2">#1E88E5</color>
-    <color name="enchant_3">#9C27B0</color>
-    <color name="enchant_4">#FFD700</color>
+    <color name="colorPrimary">#00E5FF</color>
+    <color name="colorPrimaryDark">#00B8CC</color>
+    <color name="colorAccent">#FF9800</color>
+    <color name="radar_cyan">#00E5FF</color>
+    <color name="radar_red">#F44336</color>
 </resources>
