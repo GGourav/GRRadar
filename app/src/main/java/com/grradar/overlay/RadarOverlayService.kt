@@ -11,14 +11,15 @@ import android.graphics.PixelFormat
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import com.grradar.MainActivity
 import com.grradar.R
+import com.grradar.logger.DiscoveryLogger
 import com.grradar.vpn.AlbionVpnService
 
 class RadarOverlayService : Service() {
@@ -37,15 +38,23 @@ class RadarOverlayService : Service() {
     private var tvPc: TextView? = null
     private var tvPca: TextView? = null
     private var tvEntity: TextView? = null
+    private var tvLog: TextView? = null
     private var isRunning = false
 
     private val handler = Handler(Looper.getMainLooper())
+
     private val updateRunnable = object : Runnable {
         override fun run() {
             updateStats()
             if (isRunning) {
                 handler.postDelayed(this, UPDATE_INTERVAL_MS)
             }
+        }
+    }
+
+    private val logListener: (String) -> Unit = { logs ->
+        handler.post {
+            tvLog?.text = logs.takeLast(2000) // Limit to last 2000 chars
         }
     }
 
@@ -109,8 +118,8 @@ class RadarOverlayService : Service() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
 
         val params = WindowManager.LayoutParams(
+            500,
             400,
-            200,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
@@ -122,55 +131,71 @@ class RadarOverlayService : Service() {
             y = 100
         }
 
-        // Create overlay with statistics display
+        // Create overlay with statistics and log display
         overlayView = FrameLayout(this).apply {
-            setBackgroundColor(0xCC000000.toInt()) // Dark semi-transparent background
+            setBackgroundColor(0xDD000000.toInt()) // Dark semi-transparent background
+            setPadding(12, 12, 12, 12)
 
-            // Add padding
-            setPadding(16, 16, 16, 16)
+            // Create main container
+            val container = FrameLayout(this@RadarOverlayService)
 
-            // Create stats text views
-            val textLayout = FrameLayout(this@RadarOverlayService).apply {
-                
-                tvPc = TextView(this@RadarOverlayService).apply {
-                    text = "PC: 0"
-                    textSize = 14f
-                    setTextColor(Color.CYAN)
-                    layoutParams = FrameLayout.LayoutParams(
-                        FrameLayout.LayoutParams.WRAP_CONTENT,
-                        FrameLayout.LayoutParams.WRAP_CONTENT
-                    ).apply { topMargin = 0 }
-                }
-                addView(tvPc)
-
-                tvPca = TextView(this@RadarOverlayService).apply {
-                    text = "PCA: 0"
-                    textSize = 14f
-                    setTextColor(Color.GREEN)
-                    layoutParams = FrameLayout.LayoutParams(
-                        FrameLayout.LayoutParams.WRAP_CONTENT,
-                        FrameLayout.LayoutParams.WRAP_CONTENT
-                    ).apply { topMargin = 40 }
-                }
-                addView(tvPca)
-
-                tvEntity = TextView(this@RadarOverlayService).apply {
-                    text = "Entity: 0"
-                    textSize = 14f
-                    setTextColor(Color.YELLOW)
-                    layoutParams = FrameLayout.LayoutParams(
-                        FrameLayout.LayoutParams.WRAP_CONTENT,
-                        FrameLayout.LayoutParams.WRAP_CONTENT
-                    ).apply { topMargin = 80 }
-                }
-                addView(tvEntity)
+            // Stats section
+            tvPc = TextView(this@RadarOverlayService).apply {
+                text = "PC: 0"
+                textSize = 13f
+                setTextColor(Color.CYAN)
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = 0 }
             }
-            addView(textLayout)
+            container.addView(tvPc)
+
+            tvPca = TextView(this@RadarOverlayService).apply {
+                text = "PCA: 0"
+                textSize = 13f
+                setTextColor(Color.GREEN)
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = 28 }
+            }
+            container.addView(tvPca)
+
+            tvEntity = TextView(this@RadarOverlayService).apply {
+                text = "Entity: 0"
+                textSize = 13f
+                setTextColor(Color.YELLOW)
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = 56 }
+            }
+            container.addView(tvEntity)
+
+            // Log section
+            tvLog = TextView(this@RadarOverlayService).apply {
+                text = "Logs will appear here..."
+                textSize = 10f
+                setTextColor(Color.WHITE)
+                maxLines = 15
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = 90 }
+            }
+            container.addView(tvLog)
+
+            addView(container)
         }
 
         windowManager?.addView(overlayView, params)
         isRunning = true
-        Log.d(TAG, "Overlay shown with stats display")
+
+        // Add log listener
+        DiscoveryLogger.addListener(logListener)
+
+        DiscoveryLogger.i("Overlay shown with stats and log display")
     }
 
     private fun startStatsUpdate() {
@@ -188,6 +213,9 @@ class RadarOverlayService : Service() {
     }
 
     private fun hideOverlay() {
+        // Remove log listener
+        DiscoveryLogger.removeListener(logListener)
+
         overlayView?.let {
             windowManager?.removeView(it)
             overlayView = null
@@ -195,8 +223,10 @@ class RadarOverlayService : Service() {
         tvPc = null
         tvPca = null
         tvEntity = null
+        tvLog = null
         isRunning = false
-        Log.d(TAG, "Overlay hidden")
+
+        DiscoveryLogger.i("Overlay hidden")
     }
 
     override fun onDestroy() {
