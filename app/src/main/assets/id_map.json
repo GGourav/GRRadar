@@ -1,6 +1,6 @@
 {
-  "version": "2026-03-14-v2",
-  "comment": "Complete Photon param key mappings and entity classification patterns for GRRadar. Based on deep analysis of ao-bin-dumps (3756 unique mob IDs) and Albion Wiki.",
+  "version": "2026-03-14-v3",
+  "comment": "Complete Photon param key mappings and entity classification for GRRadar. Based on deep analysis of ao-bin-dumps (3756 unique mob IDs), Albion Wiki, and albiononline2d.com.",
 
   "common": {
     "objectIdKey": 0,
@@ -65,33 +65,51 @@
     "comment": "Float params in this range are treated as world coordinates in Plan B scanner"
   },
 
+  "knownPrefixes": {
+    "fiber": ["T1_FIBER", "T2_FIBER", "T3_FIBER", "T4_FIBER", "T5_FIBER", "T6_FIBER", "T7_FIBER", "T8_FIBER", "FIBER", "COTTON", "HEMP", "FLAX", "SILK", "SPONGE"],
+    "ore": ["T1_ORE", "T2_ORE", "T3_ORE", "T4_ORE", "T5_ORE", "T6_ORE", "T7_ORE", "T8_ORE", "ORE", "COPPER", "TIN", "IRON", "STEEL", "GOLD", "SILVER_ORE", "TITANIUM", "RUNITE", "METEORITE"],
+    "logs": ["T1_WOOD", "T2_WOOD", "T3_WOOD", "T4_WOOD", "T5_WOOD", "T6_WOOD", "T7_WOOD", "T8_WOOD", "WOOD", "LOG", "BIRCH", "OAK", "CEDAR", "PINE", "FROSTWOOD"],
+    "rock": ["T1_ROCK", "T2_ROCK", "T3_ROCK", "T4_ROCK", "T5_ROCK", "T6_ROCK", "T7_ROCK", "T8_ROCK", "ROCK", "STONE", "LIMESTONE", "SANDSTONE", "TRAVERTINE", "GRANITE", "SLATE", "BASALT"],
+    "hide": ["T1_HIDE", "T2_HIDE", "T3_HIDE", "T4_HIDE", "T5_HIDE", "T6_HIDE", "T7_HIDE", "T8_HIDE", "HIDE", "LEATHER", "REPTILE", "BEAR", "DIREWOLF", "SKIN"],
+    "crystalMobs": ["CRYSTALSPIDER", "CRYSTAL_COBRA", "CRYSTALCOBRA", "CRYSTAL_BEETLE", "CRYSTALBEETLE", "ARCANE_ELEMENTAL"],
+    "avalonianDrones": ["AVALON_DRONE", "AVALONIAN_DRONE", "TREASURE_MINION"],
+    "mistBosses": ["MISTS_GRIFFIN", "GRIFFIN", "MISTS_FAIRYDRAGON", "FAIRYDRAGON", "FEY_DRAGON", "VEILWEAVER", "VEIL_WEAVER"],
+    "mistEntities": ["MIST_WISP", "MISTS_WISP", "MISTS_CAGEDWISP", "CAGEDWISP", "CAGED_WISP", "TURBULENT_MIST", "MIST_KEEPER", "MIST_HERALD"],
+    "boss": ["BOSS", "ELDER", "ANCIENT", "GUARDIAN", "KEEPER", "MISTBOSS", "MINIBOSS", "VETERAN_BOSS", "ELITE"]
+  },
+
   "entityClassification": {
     "resources": {
       "FIBER": {
         "patterns": ["T[1-8]_FIBER", "FIBER", "COTTON", "HEMP", "FLAX", "SILK", "SPONGE"],
         "displayName": "Fiber",
-        "color": "#C4B454"
+        "color": "#C4B454",
+        "maxEnchantment": 4
       },
       "ORE": {
         "patterns": ["T[1-8]_ORE", "ORE", "COPPER", "TIN", "IRON", "STEEL", "GOLD", "SILVER_ORE", "TITANIUM", "RUNITE", "METEORITE"],
         "displayName": "Ore",
-        "color": "#8B4513"
+        "color": "#8B4513",
+        "maxEnchantment": 4
       },
       "WOOD": {
         "patterns": ["T[1-8]_WOOD", "WOOD", "LOG", "BIRCH", "OAK", "CEDAR", "PINE", "FROSTWOOD"],
         "displayName": "Logs",
-        "color": "#228B22"
+        "color": "#228B22",
+        "maxEnchantment": 4
       },
       "ROCK": {
         "patterns": ["T[1-8]_ROCK", "T[1-8]_STONE", "ROCK", "STONE", "LIMESTONE", "SANDSTONE", "TRAVERTINE", "GRANITE", "SLATE", "BASALT"],
         "displayName": "Rock",
         "color": "#808080",
-        "maxEnchantment": 3
+        "maxEnchantment": 3,
+        "note": "Rock enchantment caps at 3, unlike other resources"
       },
       "HIDE": {
         "patterns": ["T[1-8]_HIDE", "HIDE", "LEATHER", "SKIN"],
         "displayName": "Hide",
-        "color": "#8B0000"
+        "color": "#8B0000",
+        "maxEnchantment": 4
       }
     },
 
@@ -109,18 +127,18 @@
         "displayName": "Crystal Cobra",
         "color": "#9400D3",
         "tierRange": [5, 8],
-        "groupSize": "10-man",
+        "groupSize": "10-man party",
         "foundIn": "Outlands Black Zones",
-        "addedIn": "Version 27.000.1 Horizons"
+        "addedIn": "Version 27.000.1 Horizons (Dec 2025)"
       },
       "CRYSTAL_BEETLE": {
         "patterns": ["CRYSTALBEETLE", "CRYSTAL_BEETLE", "ARCANE_CRYSTALBEETLE"],
         "displayName": "Crystal Beetle",
         "color": "#FFD700",
         "tierRange": [5, 8],
-        "groupSize": "5-man",
+        "groupSize": "5-man party",
         "foundIn": "Outlands Black Zones",
-        "addedIn": "Version 27.000.1 Horizons"
+        "addedIn": "Version 27.000.1 Horizons (Dec 2025)"
       },
       "ARCANE_ELEMENTAL": {
         "patterns": ["ARCANE_ELEMENTAL", "ARCANEELEMENTAL"],
@@ -135,28 +153,29 @@
         "displayName": "Griffin",
         "color": "#FF6600",
         "tierRange": [4, 8],
-        "spawnCondition": "Uncommon+ Mists only"
+        "spawnCondition": "Uncommon+ Mists only - NEVER in Common Mists"
       },
       "FEY_DRAGON": {
         "patterns": ["MISTS_FAIRYDRAGON", "FAIRYDRAGON", "FEY_DRAGON"],
         "displayName": "Fey Dragon",
         "color": "#FF00FF",
         "tierRange": [4, 8],
-        "spawnCondition": "Uncommon+ Mists only"
+        "spawnCondition": "Uncommon+ Mists only - NEVER in Common Mists"
       },
       "VEILWEAVER": {
         "patterns": ["VEILWEAVER", "VEIL_WEAVER"],
         "displayName": "Veilweaver",
         "color": "#4B0082",
-        "spawnCondition": "Uncommon+ Mists only"
+        "spawnCondition": "Uncommon+ Mists only - NEVER in Common Mists"
       }
     },
 
     "mistEntities": {
       "MIST_WISP": {
-        "patterns": ["MISTS_PORTAL_WISP", "MIST_WISP"],
+        "patterns": ["MISTS_PORTAL_WISP", "MIST_WISP", "MISTS_WISP"],
         "displayName": "Mist Wisp",
-        "color": "#E6E6FA"
+        "color": "#E6E6FA",
+        "rarities": ["Standard", "Uncommon", "Rare", "Legendary"]
       },
       "TURBULENT_WISP": {
         "patterns": ["TURBULENT_MISTS", "POWERCRYSTAL_WISP"],
@@ -164,7 +183,7 @@
         "color": "#87CEEB"
       },
       "CAGED_WISP": {
-        "patterns": ["CAGEDWISP", "CAGED_WISP", "MISTSCAGEDWISP"],
+        "patterns": ["CAGEDWISP", "CAGED_WISP", "MISTSCAGEDWISP", "MISTS_CAGEDWISP"],
         "displayName": "Caged Wisp",
         "color": "#FF69B4"
       },
@@ -179,12 +198,14 @@
       "AVALONIAN_DRONE": {
         "patterns": ["AVALON_DRONE", "AVALONIAN_DRONE", "TREASURE_MINION"],
         "displayName": "Avalonian Drone",
-        "color": "#DAA520"
+        "color": "#DAA520",
+        "note": "Support/healer type mob"
       },
       "TREASURE_DRONE": {
-        "patterns": ["ROAMING_AVALON_TREASURE", "TREASURE_MINION"],
+        "patterns": ["ROAMING_AVALON_TREASURE"],
         "displayName": "Treasure Drone",
-        "color": "#FFD700"
+        "color": "#FFD700",
+        "note": "Wandering mob that carries treasure chests"
       }
     },
 
@@ -192,24 +213,35 @@
       "patterns": ["_HIDE_", "CRITTER_HIDE"],
       "displayName": "Hide Animal",
       "color": "#CD853F",
+      "count": "~40 types total",
+      "standardBiome": {
+        "T1": "Mallard",
+        "T2": "Impala",
+        "T3": "Marten",
+        "T4": "Giant Stag",
+        "T5": "Moose",
+        "T6": "Cave Badger",
+        "T7": "Giant Toad",
+        "T8": "Oxenold"
+      },
       "mistsVariants": {
-        "T1": "WOLPERTINGER",
-        "T2": "FEY_FOX",
-        "T3": "FOGLANDS_DOE",
-        "T4": "FOGLANDS_HART",
-        "T5": "GREAT_MYSTIC_OWL",
-        "T6": "MIST_HOUND",
-        "T7": "MISTHIDE_MAULER",
-        "T8": "DRAGONHAWK"
+        "T1": "Wolpertinger",
+        "T2": "Fey Fox",
+        "T3": "Foglands Doe",
+        "T4": "Foglands Hart",
+        "T5": "Great Mystic Owl",
+        "T6": "Mist Hound",
+        "T7": "Misthide Mauler",
+        "T8": "Dragonhawk"
       },
       "roadsVariants": {
-        "T1": "SALAMANDER",
-        "T3": "ROADS_STAG",
-        "T4": "ROADS_DIREWOLF",
-        "T5": "BISON",
-        "T6": "ROADS_OWL",
-        "T7": "ROADS_DIREBEAR",
-        "T8": "BASILISK"
+        "T1": "Salamander",
+        "T3": "Roads Stag",
+        "T4": "Roads Direwolf",
+        "T5": "Bison",
+        "T6": "Roads Owl",
+        "T7": "Roads Direbear",
+        "T8": "Basilisk"
       }
     },
 
@@ -217,39 +249,45 @@
       "patterns": ["GUARDIAN_", "CRITTER_FIBER", "CRITTER_ORE", "CRITTER_ROCK", "CRITTER_WOOD", "CRITTER_HIDE"],
       "displayName": "Resource Guardian",
       "color": "#32CD32",
-      "note": "Kill then harvest for 2x speed"
+      "note": "Kill then harvest for 2x faster gathering speed"
     },
 
     "factionMobs": {
       "HERETIC": {
         "patterns": ["_HERETIC_"],
         "displayName": "Heretic",
-        "color": "#8B4513"
+        "color": "#8B4513",
+        "foundIn": "Yellow/Red Zones"
       },
       "MORGANA": {
         "patterns": ["_MORGANA_"],
         "displayName": "Morgana",
-        "color": "#4B0082"
+        "color": "#4B0082",
+        "foundIn": "Red/Black Zones"
       },
       "KEEPER": {
         "patterns": ["_KEEPER_"],
         "displayName": "Keeper",
-        "color": "#228B22"
+        "color": "#228B22",
+        "foundIn": "Black Zones"
       },
       "UNDEAD": {
         "patterns": ["_UNDEAD_"],
         "displayName": "Undead",
-        "color": "#708090"
+        "color": "#708090",
+        "foundIn": "Black Zones"
       },
       "DEMON": {
         "patterns": ["_DEMON_"],
         "displayName": "Demon",
-        "color": "#DC143C"
+        "color": "#DC143C",
+        "foundIn": "Hellgates, Black Zones"
       },
       "AVALONIAN": {
         "patterns": ["_AVALON_"],
         "displayName": "Avalonian",
-        "color": "#DAA520"
+        "color": "#DAA520",
+        "foundIn": "Outlands, Roads of Avalon"
       }
     },
 
@@ -306,17 +344,6 @@
     }
   },
 
-  "knownPrefixes": {
-    "fiber": ["T1_FIBER", "T2_FIBER", "T3_FIBER", "T4_FIBER", "T5_FIBER", "T6_FIBER", "T7_FIBER", "T8_FIBER"],
-    "ore": ["T1_ORE", "T2_ORE", "T3_ORE", "T4_ORE", "T5_ORE", "T6_ORE", "T7_ORE", "T8_ORE"],
-    "logs": ["T1_WOOD", "T2_WOOD", "T3_WOOD", "T4_WOOD", "T5_WOOD", "T6_WOOD", "T7_WOOD", "T8_WOOD"],
-    "rock": ["T1_ROCK", "T2_ROCK", "T3_ROCK", "T4_ROCK", "T5_ROCK", "T6_ROCK", "T7_ROCK", "T8_ROCK"],
-    "hide": ["T1_HIDE", "T2_HIDE", "T3_HIDE", "T4_HIDE", "T5_HIDE", "T6_HIDE", "T7_HIDE", "T8_HIDE"],
-    "crystalMobs": ["CRYSTALSPIDER", "CRYSTALCOBRA", "CRYSTALBEETLE"],
-    "avalonianDrones": ["AVALON_DRONE", "AVALONIAN_DRONE"],
-    "mistBosses": ["MISTS_GRIFFIN", "MISTS_FAIRYDRAGON", "VEILWEAVER"]
-  },
-
   "enchantmentColors": {
     "0": {"name": "Flat", "ringColor": null},
     "1": {"name": "Uncommon (.1)", "ringColor": "#00FF00"},
@@ -346,15 +373,16 @@
   "notes": {
     "dataSources": [
       "ao-bin-dumps (github.com/broderickhyman/ao-bin-dumps) - 3756 unique mob IDs",
-      "albiononline.com official wiki and guides",
-      "albiononline2d.com mob database"
+      "albiononline.com official wiki and game guides",
+      "albiononline2d.com mob and item database"
     ],
     "lastUpdated": "March 2026",
     "crystalMobsNote": "Crystal Cobra and Crystal Beetle added in Version 27.000.1 (Horizons update, Dec 2025)",
-    "smugglerNote": "Smugglers (Rogue Frontier update Feb 2025) are NPC structures/factions, not hostile mobs",
-    "mistBossSpawnRule": "Mythical creatures (Griffin, Fey Dragon, Veilweaver) ONLY spawn in Uncommon+ Mists, NEVER in Common Mists",
-    "hideAnimalCount": "~40 types including Mists and Roads variants",
-    "resourceMobNote": "Resource Guardians provide 2x faster gathering than static nodes",
-    "cropsExcluded": "Crops (Wheat, Carrot, Turnip, Cabbage, Bean, Potato, Corn, Pumpkin) only grow on personal islands - NOT relevant for open-world radar"
+    "smugglerNote": "Smugglers (Rogue Frontier update Feb 2025) are NPC structures/factions with 35 Smuggler's Dens - NOT hostile mobs",
+    "mistBossSpawnRule": "CRITICAL: Mythical creatures (Griffin, Fey Dragon, Veilweaver) ONLY spawn in Uncommon+ Mists, NEVER in Common Mists",
+    "hideAnimalCount": "~40 types total including standard biome, Mists, and Roads of Avalon variants",
+    "resourceGuardianNote": "Resource Guardians provide 2x faster gathering than static nodes - kill first then harvest",
+    "cropsExcluded": "Crops (Wheat, Carrot, Turnip, Cabbage, Bean, Potato, Corn, Pumpkin) only grow on personal islands - NOT relevant for open-world radar and have been excluded",
+    "rockEnchantmentCap": "Rock/Stone enchantment caps at level 3, unlike other resources which go to level 4"
   }
 }
