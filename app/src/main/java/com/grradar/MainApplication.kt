@@ -1,6 +1,6 @@
 package com.grradar
 
-import androidx.multidex.MultiDexApplication
+import android.app.Application
 import com.grradar.data.IdMapRepository
 import com.grradar.logger.DiscoveryLogger
 
@@ -8,11 +8,12 @@ import com.grradar.logger.DiscoveryLogger
  * Main Application class
  * 
  * Handles:
- * - MultiDex support (via MultiDexApplication base class)
  * - IdMapRepository initialization
  * - DiscoveryLogger startup
+ * 
+ * Note: MultiDex not needed for minSdk 26+ (native support since API 21)
  */
-class MainApplication : MultiDexApplication() {
+class MainApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
