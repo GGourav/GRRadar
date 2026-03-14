@@ -1,136 +1,96 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="24dp"
-    android:gravity="center_horizontal"
+    android:padding="16dp"
     tools:context=".MainActivity">
 
     <TextView
+        android:id="@+id/titleText"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="@string/app_name"
-        android:textSize="28sp"
+        android:textSize="24sp"
         android:textStyle="bold"
-        android:textColor="@color/radar_cyan"
-        android:layout_marginBottom="32dp"/>
-
-    <androidx.cardview.widget.CardView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginBottom="24dp"
-        android:elevation="4dp">
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:padding="16dp">
-
-            <TextView
-                android:id="@+id/tv_status"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="Status: Checking permissions..."
-                android:textSize="16sp"
-                android:textStyle="bold"
-                android:gravity="center"
-                android:layout_marginBottom="12dp"/>
-
-            <TextView
-                android:id="@+id/tv_overlay_status"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="Overlay Permission: Checking..."
-                android:textSize="14sp"
-                android:layout_marginBottom="8dp"/>
-
-            <TextView
-                android:id="@+id/tv_vpn_status"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="VPN Permission: Checking..."
-                android:textSize="14sp"/>
-
-        </LinearLayout>
-
-    </androidx.cardview.widget.CardView>
+        android:textColor="@color/primary"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginTop="32dp" />
 
     <TextView
+        android:id="@+id/statusText"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Permissions"
+        android:text="@string/status_ready"
         android:textSize="16sp"
-        android:textStyle="bold"
-        android:layout_marginBottom="8dp"/>
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="center"
-        android:layout_marginBottom="24dp">
-
-        <Button
-            android:id="@+id/btn_request_overlay"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:layout_marginEnd="8dp"
-            android:text="Overlay"
-            style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
-
-        <Button
-            android:id="@+id/btn_request_vpn"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:layout_marginStart="8dp"
-            android:text="VPN"
-            style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
-
-    </LinearLayout>
+        android:textColor="@color/status_normal"
+        app:layout_constraintTop_toBottomOf="@id/titleText"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginTop="24dp" />
 
     <TextView
+        android:id="@+id/statsText"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Radar Control"
-        android:textSize="16sp"
-        android:textStyle="bold"
-        android:layout_marginBottom="8dp"/>
-
-    <Button
-        android:id="@+id/btn_start"
-        android:layout_width="match_parent"
-        android:layout_height="56dp"
-        android:text="START RADAR"
-        android:textSize="18sp"
-        android:textStyle="bold"
-        android:enabled="false"
-        android:backgroundTint="@color/radar_cyan"
-        style="@style/Widget.MaterialComponents.Button"/>
-
-    <Button
-        android:id="@+id/btn_stop"
-        android:layout_width="match_parent"
-        android:layout_height="56dp"
-        android:text="STOP RADAR"
-        android:textSize="18sp"
-        android:textStyle="bold"
-        android:enabled="false"
-        android:layout_marginTop="12dp"
-        android:backgroundTint="@color/radar_red"
-        style="@style/Widget.MaterialComponents.Button"/>
-
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="32dp"
-        android:text="Instructions:\n1. Grant Overlay permission\n2. Grant VPN permission\n3. Press START RADAR\n4. Launch Albion Online"
+        android:text=""
         android:textSize="12sp"
-        android:textColor="@android:color/darker_gray"
-        android:gravity="center"/>
+        android:textColor="@color/status_normal"
+        android:fontFamily="monospace"
+        app:layout_constraintTop_toBottomOf="@id/statusText"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginTop="8dp" />
 
-</LinearLayout>
+    <Button
+        android:id="@+id/startButton"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:text="@string/start_radar"
+        android:backgroundTint="@color/start_button"
+        android:textColor="@android:color/white"
+        android:enabled="true"
+        app:layout_constraintTop_toBottomOf="@id/statsText"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginTop="32dp"
+        android:layout_marginStart="32dp"
+        android:layout_marginEnd="32dp" />
+
+    <Button
+        android:id="@+id/stopButton"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:text="@string/stop_radar"
+        android:backgroundTint="@color/stop_button"
+        android:textColor="@android:color/white"
+        android:enabled="false"
+        app:layout_constraintTop_toBottomOf="@id/startButton"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginTop="16dp"
+        android:layout_marginStart="32dp"
+        android:layout_marginEnd="32dp" />
+
+    <TextView
+        android:id="@+id/instructionsText"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:text="@string/instructions"
+        android:textSize="12sp"
+        android:textColor="@color/instructions"
+        android:gravity="center"
+        app:layout_constraintTop_toBottomOf="@id/stopButton"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        android:layout_marginTop="32dp"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
+        android:layout_marginBottom="16dp" />
+
+</androidx.constraintlayout.widget.ConstraintLayout>
