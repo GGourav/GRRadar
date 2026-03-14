@@ -330,7 +330,7 @@ class IdMapRepository private constructor() {
             upper.contains("_MINIBOSS") ||
             upper.contains("_VETERAN_BOSS") -> MobCategory.BOSS
             
-            else -> MobCategory.ENEMY
+            else -> MobCategory.OTHER
         }
     }
     
