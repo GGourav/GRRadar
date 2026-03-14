@@ -8,9 +8,9 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.ParcelFileDescriptor
 import android.os.PowerManager
-import android.util.Log
 import com.grradar.MainActivity
 import com.grradar.R
+import com.grradar.logger.DiscoveryLogger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -27,11 +27,13 @@ class AlbionVpnService : VpnService() {
         const val ACTION_CONNECT = "com.grradar.vpn.CONNECT"
         const val ACTION_DISCONNECT = "com.grradar.vpn.DISCONNECT"
 
+        const val BROADCAST_VPN_STATUS = "com.grradar.VPN_STATUS"
+
         private const val TAG = "AlbionVpnService"
         private const val CHANNEL_ID = "grradar_vpn_channel"
         private const val NOTIFICATION_ID = 1001
 
-        // VPN Configuration
+        // VPN Configuration (from document B.4)
         private const val TUN_ADDRESS = "10.0.0.2"
         private const val TUN_PREFIX = 32
         private const val TUN_ROUTE = "0.0.0.0"
@@ -40,10 +42,17 @@ class AlbionVpnService : VpnService() {
         private const val ALBION_PACKAGE = "com.albiononline"
         private const val PHOTON_PORT = 5056
 
+        // DNS Servers (from document Step 3)
+        private const val DNS_PRIMARY = "8.8.8.8"
+        private const val DNS_SECONDARY = "8.8.4.4"
+
         // Packet constants
         private const val IP_HEADER_MIN_LENGTH = 20
         private const val UDP_HEADER_LENGTH = 8
         private const val PROTOCOL_UDP = 17
+
+        // Buffer size (from document: 65536-byte buffer)
+        private const val BUFFER_SIZE = 65536
 
         // Statistics (static for access from overlay)
         @Volatile
@@ -131,11 +140,11 @@ class AlbionVpnService : VpnService() {
         val powerManager = getSystemService(POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
-            "GRRadar::TunWakeLock"
+            "GRRadar::VpnWakeLock"
         ).apply {
             acquire(10 * 60 * 1000L) // 10 minutes max, will re-acquire
         }
-        Log.i(TAG, "WakeLock acquired")
+        DiscoveryLogger.i("WakeLock acquired")
     }
 
     private fun releaseWakeLock() {
@@ -145,42 +154,60 @@ class AlbionVpnService : VpnService() {
             }
         }
         wakeLock = null
-        Log.i(TAG, "WakeLock released")
+        DiscoveryLogger.i("WakeLock released")
+    }
+
+    private fun broadcastStatus(running: Boolean) {
+        val intent = Intent(BROADCAST_VPN_STATUS).apply {
+            putExtra("running", running)
+        }
+        sendBroadcast(intent)
     }
 
     private fun startVpn() {
         try {
+            // Start Discovery Logger
+            DiscoveryLogger.start(this)
+
             // Reset statistics
             totalPacketCount = 0
             albionPacketCount = 0
             entityCount = 0
 
-            // Configure VPN interface - only allow Albion Online
+            // Configure VPN interface (from document Step 3)
             val builder = Builder()
-                .setSession("GRRadar")
+                .setMtu(MTU)
                 .addAddress(TUN_ADDRESS, TUN_PREFIX)
                 .addRoute(TUN_ROUTE, TUN_ROUTE_PREFIX)
-                .setMtu(MTU)
+                .addDnsServer(DNS_PRIMARY)
+                .addDnsServer(DNS_SECONDARY)
+                .setSession("GRRadar")
                 .addAllowedApplication(ALBION_PACKAGE)
+
+            DiscoveryLogger.i("Creating VPN interface...")
+            DiscoveryLogger.i("TUN Address: $TUN_ADDRESS/$TUN_PREFIX")
+            DiscoveryLogger.i("MTU: $MTU")
+            DiscoveryLogger.i("DNS: $DNS_PRIMARY, $DNS_SECONDARY")
+            DiscoveryLogger.i("Allowed app: $ALBION_PACKAGE")
 
             vpnInterface = builder.establish()
 
             if (vpnInterface == null) {
-                Log.e(TAG, "Failed to establish VPN interface - user may have denied permission")
+                DiscoveryLogger.e("Failed to establish VPN interface - user may have denied permission")
+                broadcastStatus(false)
                 return
             }
 
             isRunning = true
-            Log.i(TAG, "VPN interface established successfully")
-            Log.i(TAG, "TUN Address: $TUN_ADDRESS/$TUN_PREFIX")
-            Log.i(TAG, "MTU: $MTU")
-            Log.i(TAG, "Allowed app: $ALBION_PACKAGE")
+            broadcastStatus(true)
+            DiscoveryLogger.i("VPN interface established successfully")
 
             // Start packet capture loop
             startPacketCapture()
 
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to start VPN: ${e.message}", e)
+            DiscoveryLogger.e("Failed to start VPN: ${e.message}", e)
+            broadcastStatus(false)
             stopVpn()
         }
     }
@@ -188,10 +215,12 @@ class AlbionVpnService : VpnService() {
     private fun startPacketCapture() {
         vpnJob = coroutineScope.launch {
             val vpnInput = FileInputStream(vpnInterface!!.fileDescriptor)
-            val buffer = ByteBuffer.allocate(MTU)
+            val buffer = ByteBuffer.allocate(BUFFER_SIZE)
 
-            Log.i(TAG, "Packet capture loop started - waiting for Albion traffic...")
-            Log.i(TAG, "Make sure Albion Online is installed and running")
+            DiscoveryLogger.i("Packet capture loop started")
+            DiscoveryLogger.i("Waiting for Albion Online traffic on port $PHOTON_PORT...")
+            DiscoveryLogger.i("Make sure Albion Online is installed and running")
+            DiscoveryLogger.i("Buffer size: $BUFFER_SIZE bytes")
 
             while (isActive && isRunning) {
                 try {
@@ -212,19 +241,19 @@ class AlbionVpnService : VpnService() {
                     }
                 } catch (e: Exception) {
                     if (isRunning) {
-                        Log.e(TAG, "Error reading packet: ${e.message}")
+                        DiscoveryLogger.e("Error reading packet: ${e.message}")
                     }
                     break
                 }
             }
 
-            Log.i(TAG, "Packet capture loop stopped")
+            DiscoveryLogger.i("Packet capture loop stopped")
         }
     }
 
     private fun processPacket(buffer: ByteBuffer) {
         try {
-            // Parse IP header
+            // Parse IP header (from document Step 3)
             if (buffer.remaining() < IP_HEADER_MIN_LENGTH) {
                 return
             }
@@ -259,7 +288,7 @@ class AlbionVpnService : VpnService() {
             // Check if this is Photon traffic (port 5056)
             if (sourcePort == PHOTON_PORT || destPort == PHOTON_PORT) {
                 albionPacketCount++
-                
+
                 val payloadOffset = udpOffset + UDP_HEADER_LENGTH
                 val payloadLength = buffer.remaining() - payloadOffset
 
@@ -270,22 +299,22 @@ class AlbionVpnService : VpnService() {
 
                     // Log every 10 Albion packets
                     if (albionPacketCount % 10 == 0L) {
-                        Log.d(TAG, "PC: $totalPacketCount | PCA: $albionPacketCount | Entity: $entityCount")
-                        Log.d(TAG, "Photon payload size: $payloadLength bytes, srcPort: $sourcePort, dstPort: $destPort")
+                        DiscoveryLogger.d("PC: $totalPacketCount | PCA: $albionPacketCount | Entity: $entityCount | Payload: $payloadLength bytes")
                     }
 
                     // TODO: Pass to PhotonParser (Step 4)
-                    // PhotonParser.parse(payload)
+                    // PhotonParser.parse(payload, payloadLength)
                 }
             }
 
         } catch (e: Exception) {
-            Log.e(TAG, "Error processing packet: ${e.message}")
+            DiscoveryLogger.e("Error processing packet: ${e.message}")
         }
     }
 
     private fun stopVpn() {
         isRunning = false
+        broadcastStatus(false)
 
         vpnJob?.cancel()
         vpnJob = null
@@ -295,8 +324,11 @@ class AlbionVpnService : VpnService() {
 
         releaseWakeLock()
 
-        Log.i(TAG, "VPN stopped")
-        Log.i(TAG, "Final stats - PC: $totalPacketCount | PCA: $albionPacketCount | Entity: $entityCount")
+        DiscoveryLogger.i("VPN stopped")
+        DiscoveryLogger.i("Final stats - PC: $totalPacketCount | PCA: $albionPacketCount | Entity: $entityCount")
+
+        // Stop Discovery Logger
+        DiscoveryLogger.stop()
     }
 
     override fun onDestroy() {
@@ -305,7 +337,7 @@ class AlbionVpnService : VpnService() {
     }
 
     override fun onRevoke() {
-        Log.w(TAG, "VPN permission revoked by user")
+        DiscoveryLogger.w("VPN permission revoked by user")
         stopVpn()
         super.onRevoke()
     }
