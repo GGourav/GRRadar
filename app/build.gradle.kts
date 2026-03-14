@@ -16,7 +16,7 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         
-        multiDexEnabled = true
+        // Remove: multiDexEnabled = true (not needed for minSdk 26+)
     }
 
     buildTypes {
@@ -59,8 +59,8 @@ dependencies {
     // JSON parsing
     implementation("com.google.code.gson:gson:2.10.1")
     
-    // MultiDex
-    implementation("androidx.multidex:multidex:2.0.1")
+    // Remove MultiDex - not needed for minSdk 26+
+    // implementation("androidx.multidex:multidex:2.0.1")
     
     // Testing
     testImplementation("junit:junit:4.13.2")
