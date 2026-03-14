@@ -24,13 +24,11 @@ jobs:
       with:
         java-version: '17'
         distribution: 'temurin'
-        cache: gradle
 
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v3
-
-    - name: Grant execute permission for gradlew
-      run: chmod +x gradlew
+      with:
+        gradle-version: '8.2'
 
     - name: Copy id_map.json to assets
       run: |
@@ -38,10 +36,10 @@ jobs:
         cp id_map.json app/src/main/assets/
 
     - name: Build Debug APK
-      run: ./gradlew assembleDebug
+      run: gradle assembleDebug
 
     - name: Build Release APK (unsigned)
-      run: ./gradlew assembleRelease
+      run: gradle assembleRelease
 
     - name: Upload Debug APK
       uses: actions/upload-artifact@v4
