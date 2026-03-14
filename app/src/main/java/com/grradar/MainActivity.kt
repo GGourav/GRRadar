@@ -1,8 +1,12 @@
 package com.grradar
 
 import android.app.Activity
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.net.VpnService
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.widget.Button
@@ -25,17 +29,47 @@ class MainActivity : AppCompatActivity() {
 
     private var isRadarRunning = false
 
+    // Broadcast receiver for VPN status
+    private val vpnStatusReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val running = intent?.getBooleanExtra("running", false) ?: false
+            if (!running && isRadarRunning) {
+                // VPN stopped unexpectedly
+                isRadarRunning = false
+                updatePermissionStatus()
+                Toast.makeText(this@MainActivity, "VPN stopped unexpectedly", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
         initViews()
         updatePermissionStatus()
+
+        // Register broadcast receiver
+        val filter = IntentFilter("com.grradar.VPN_STATUS")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(vpnStatusReceiver, filter, RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(vpnStatusReceiver, filter)
+        }
     }
 
     override fun onResume() {
         super.onResume()
         updatePermissionStatus()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        try {
+            unregisterReceiver(vpnStatusReceiver)
+        } catch (e: Exception) {
+            // Ignore
+        }
     }
 
     private fun initViews() {
@@ -91,7 +125,9 @@ class MainActivity : AppCompatActivity() {
         )
 
         val allGranted = hasOverlay && hasVpn
-        tvStatus.text = if (allGranted) {
+        tvStatus.text = if (isRadarRunning) {
+            "Status: Radar running..."
+        } else if (allGranted) {
             "Status: Ready to start radar"
         } else {
             "Status: Grant permissions to continue"
@@ -170,9 +206,7 @@ class MainActivity : AppCompatActivity() {
         startService(overlayIntent)
 
         isRadarRunning = true
-        tvStatus.text = "Status: Radar running..."
-        btnStart.isEnabled = false
-        btnStop.isEnabled = true
+        updatePermissionStatus()
 
         Toast.makeText(this, "Radar started", Toast.LENGTH_SHORT).show()
     }
@@ -189,9 +223,7 @@ class MainActivity : AppCompatActivity() {
         startService(overlayIntent)
 
         isRadarRunning = false
-        tvStatus.text = "Status: Radar stopped"
-        btnStart.isEnabled = true
-        btnStop.isEnabled = false
+        updatePermissionStatus()
 
         Toast.makeText(this, "Radar stopped", Toast.LENGTH_SHORT).show()
     }
