@@ -1,250 +1,448 @@
 package com.grradar.overlay
 
 import android.content.Context
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
+import android.graphics.*
+import android.util.AttributeSet
+import android.util.Log
 import android.view.View
 import com.grradar.data.EntityStore
-import com.grradar.model.*
-import com.grradar.vpn.AlbionVpnService
+import com.grradar.model.EntityType
+import com.grradar.model.RadarEntity
 
-class RadarSurfaceView(context: Context) : View(context) {
+/**
+ * RadarSurfaceView — Canvas-based radar rendering view
+ *
+ * COORDINATE SYSTEM:
+ *   - World X increases East
+ *   - World Y increases North
+ *   - Canvas Y increases downward (inverted)
+ *
+ *   screenX = centerX + (entity.worldX - localX) * scale
+ *   screenY = centerY - (entity.worldY - localY) * scale
+ *
+ * RENDERING:
+ *   - Radar circle drawn at center
+ *   - Local player at center (cyan dot)
+ *   - Entities drawn relative to local player
+ *   - Different colors/sizes for different entity types
+ *   - Enchant levels shown as rings
+ *
+ * FEATURES:
+ *   - Configurable radar size and zoom
+ *   - Entity type filtering
+ *   - Distance-based clipping
+ *   - Efficient drawing with Paint caching
+ */
+class RadarSurfaceView @JvmOverloads constructor(
+    context: Context,
+    attrs: AttributeSet? = null,
+    defStyleAttr: Int = 0
+) : View(context, attrs, defStyleAttr) {
 
     companion object {
         private const val TAG = "RadarSurfaceView"
-        private const val DEFAULT_SCALE = 2.0f
-        private const val DEFAULT_RANGE = 200.0f
+
+        // Default settings
+        private const val DEFAULT_WORLD_RANGE = 50f
+        private const val DOT_SIZE_SMALL = 4f
+        private const val DOT_SIZE_NORMAL = 6f
+        private const val DOT_SIZE_LARGE = 8f
+        private const val DOT_SIZE_XL = 12f
     }
 
-    private var entityStore: EntityStore? = null
+    // ═══════════════════════════════════════════════════════════════════════════
+    // CONFIGURATION
+    // ═══════════════════════════════════════════════════════════════════════════
 
-    private var scale = DEFAULT_SCALE
-    private var showCircle = true
-    private var showBorder = true
-    private var selfDotSize = 8f
-    private var entityDotSize = 6f
-    private var borderThickness = 2f
+    /**
+     * World range visible in each direction from center
+     * Larger = zoom out, smaller = zoom in
+     */
+    var worldRange: Float = DEFAULT_WORLD_RANGE
+        set(value) {
+            field = value.coerceAtLeast(10f)
+            invalidate()
+        }
 
-    private val backgroundPaint = Paint().apply {
-        color = Color.parseColor("#E6000000")
-        style = Paint.Style.FILL
-        isAntiAlias = true
-    }
+    // Entity type visibility toggles
+    var showResources: Boolean = true
+        set(value) { field = value; invalidate() }
 
-    private val borderPaint = Paint().apply {
-        color = Color.parseColor("#80FFFFFF")
+    var showMobs: Boolean = true
+        set(value) { field = value; invalidate() }
+
+    var showPlayers: Boolean = true
+        set(value) { field = value; invalidate() }
+
+    var showChests: Boolean = true
+        set(value) { field = value; invalidate() }
+
+    var showDungeons: Boolean = true
+        set(value) { field = value; invalidate() }
+
+    var showSilver: Boolean = true
+        set(value) { field = value; invalidate() }
+
+    var showMist: Boolean = true
+        set(value) { field = value; invalidate() }
+
+    var showUnknown: Boolean = false
+        set(value) { field = value; invalidate() }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PAINTS (Cached for performance)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // Border and grid paint
+    private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = borderThickness
+        strokeWidth = 2f
+        color = Color.argb(100, 255, 255, 255)
         isAntiAlias = true
     }
 
-    private val selfPaint = Paint().apply {
-        color = Color.CYAN
+    // Fill paint for entities (reused)
+    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
         isAntiAlias = true
     }
 
-    private val textPaint = Paint().apply {
+    // Stroke paint for enchant rings
+    private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 2f
+        isAntiAlias = true
+    }
+
+    // Local player paint
+    private val selfPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.CYAN
+        isAntiAlias = true
+    }
+
+    // Text paint for labels
+    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = 10f
         color = Color.WHITE
-        textSize = 11f
         isAntiAlias = true
         setShadowLayer(2f, 1f, 1f, Color.BLACK)
     }
 
-    private val textPaintSmall = Paint().apply {
-        color = Color.parseColor("#CCCCCC")
-        textSize = 9f
-        isAntiAlias = true
-    }
+    // ═══════════════════════════════════════════════════════════════════════════
+    // COLORS
+    // ═══════════════════════════════════════════════════════════════════════════
 
-    private val textPaintGreen = Paint().apply {
-        color = Color.parseColor("#00FF00")
-        textSize = 10f
-        isAntiAlias = true
-    }
+    // Resource colors by tier (alpha increases with tier)
+    private val resourceColors = arrayOf(
+        Color.argb(120, 100, 150, 255),   // T1 - light blue
+        Color.argb(140, 100, 170, 255),   // T2
+        Color.argb(160, 100, 190, 255),   // T3
+        Color.argb(180, 120, 200, 255),   // T4
+        Color.argb(200, 140, 180, 255),   // T5
+        Color.argb(220, 160, 160, 255),   // T6
+        Color.argb(240, 180, 140, 255),   // T7
+        Color.argb(255, 200, 120, 255)    // T8 - purple-ish
+    )
 
-    private val textPaintYellow = Paint().apply {
-        color = Color.parseColor("#FFFF00")
-        textSize = 10f
-        isAntiAlias = true
-    }
+    // Enchant ring colors
+    private val enchantColors = arrayOf(
+        Color.TRANSPARENT,                  // 0 - no enchant
+        Color.argb(255, 0, 255, 0),         // 1 - green (.1)
+        Color.argb(255, 0, 150, 255),       // 2 - blue (.2)
+        Color.argb(255, 180, 0, 255),       // 3 - purple (.3)
+        Color.argb(255, 255, 215, 0)        // 4 - gold (.4)
+    )
 
-    private val textPaintRed = Paint().apply {
-        color = Color.parseColor("#FF6666")
-        textSize = 10f
-        isAntiAlias = true
-    }
+    // Mob colors
+    private val mobColors = mapOf(
+        EntityType.NORMAL_MOB to Color.argb(220, 76, 175, 80),      // Green
+        EntityType.ENCHANTED_MOB to Color.argb(220, 156, 39, 176),  // Purple
+        EntityType.BOSS_MOB to Color.argb(220, 255, 152, 0)         // Orange
+    )
 
-    private val entityPaints = mutableMapOf<EntityType, Paint>()
-
-    init {
-        initPaints()
-    }
-
-    private fun initPaints() {
-        EntityType.entries.forEach { type ->
-            entityPaints[type] = Paint().apply {
-                try {
-                    color = Color.parseColor(type.colorHex)
-                } catch (e: Exception) {
-                    color = Color.GRAY
-                }
-                style = Paint.Style.FILL
-                isAntiAlias = true
-            }
-        }
-    }
-
-    fun setEntityStore(store: EntityStore) {
-        entityStore = store
-    }
-
-    fun setScale(newScale: Float) {
-        scale = newScale
-    }
-
-    fun setDisplayOptions(circle: Boolean, border: Boolean) {
-        showCircle = circle
-        showBorder = border
-    }
+    // ═══════════════════════════════════════════════════════════════════════════
+    // RENDERING
+    // ═══════════════════════════════════════════════════════════════════════════
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        
-        val width = width.toFloat()
-        val height = height.toFloat()
-        
-        if (width <= 0 || height <= 0) return
-        
-        val centerX = width / 2
-        val centerY = height / 2
-        val radius = (Math.min(width, height) / 2) - borderThickness
 
-        if (showCircle) {
-            canvas.drawCircle(centerX, centerY, radius, backgroundPaint)
-        } else {
-            canvas.drawRect(0f, 0f, width, height, backgroundPaint)
-        }
+        // Calculate radar center and scale
+        val centerX = width / 2f
+        val centerY = height / 2f
+        val radarRadius = minOf(width, height) / 2f - 10f
+        val scale = radarRadius / worldRange
 
-        if (showBorder) {
-            if (showCircle) {
-                canvas.drawCircle(centerX, centerY, radius, borderPaint)
-            } else {
-                canvas.drawRect(
-                    borderThickness / 2,
-                    borderThickness / 2,
-                    width - borderThickness / 2,
-                    height - borderThickness / 2,
-                    borderPaint
-                )
-            }
-        }
+        // Draw radar background (semi-transparent)
+        drawRadarBackground(canvas, centerX, centerY, radarRadius)
 
-        drawStatsHeader(canvas, width)
+        // Draw grid lines
+        drawGrid(canvas, centerX, centerY, radarRadius)
 
-        val store = entityStore
-        if (store == null) {
-            canvas.drawText("No EntityStore", centerX - 45, centerY, textPaintRed)
-            canvas.drawCircle(centerX, centerY, selfDotSize, selfPaint)
-            return
-        }
+        // Get local player position
+        val (localX, localY) = EntityStore.getLocalPlayerPosition()
 
-        val (localX, localY) = store.getLocalPlayerPosition()
-        val localPlayerId = store.getLocalPlayerId()
+        // Draw all entities
+        drawEntities(canvas, EntityStore.getAllEntities(), centerX, centerY, localX, localY, scale, radarRadius)
 
-        val entities = store.getAllEntities()
-        val rangePixels = radius
-
-        entities.forEach { entity ->
-            val dx = (entity.worldX - localX) * scale
-            val dy = (entity.worldY - localY) * scale
-
-            val screenX = centerX + dx
-            val screenY = centerY - dy
-
-            val distanceFromCenter = Math.sqrt(
-                ((screenX - centerX) * (screenX - centerX) + 
-                 (screenY - centerY) * (screenY - centerY)).toDouble()
-            )
-            
-            if (distanceFromCenter <= rangePixels) {
-                drawEntity(canvas, entity, screenX, screenY)
-            }
-        }
-
-        canvas.drawCircle(centerX, centerY, selfDotSize, selfPaint)
-        
-        if (localPlayerId != null) {
-            canvas.drawText("ID: $localPlayerId", centerX - 25, centerY + selfDotSize + 12, textPaintSmall)
+        // Draw local player at center
+        if (EntityStore.hasLocalPlayer()) {
+            drawLocalPlayer(canvas, centerX, centerY)
         }
     }
 
-    private fun drawStatsHeader(canvas: Canvas, width: Float) {
-        val y = 14f
-        
-        canvas.drawText("PKG: com.albiononline", 4f, y, textPaintGreen)
-        
-        val pktCount = AlbionVpnService.packetCount.get()
-        val albCount = AlbionVpnService.albionCount.get()
-        val entCount = entityStore?.getEntityCount() ?: AlbionVpnService.entityCount
-        val vpnRunning = AlbionVpnService.isRunning()
-        
-        val statusText = if (vpnRunning) "VPN: ON" else "VPN: OFF"
-        val statusPaint = if (vpnRunning) textPaintGreen else textPaintRed
-        canvas.drawText(statusText, 4f, y + 12, statusPaint)
-        
-        canvas.drawText("PKT: $pktCount", 4f, y + 24, textPaintYellow)
-        canvas.drawText("ALB: $albCount", 70f, y + 24, textPaintYellow)
-        
-        val entityPaint = if (entCount > 0) textPaintGreen else textPaintRed
-        canvas.drawText("ENT: $entCount", 4f, y + 36, entityPaint)
-        
-        val localId = entityStore?.getLocalPlayerId()
-        val idText = if (localId != null) "LID: $localId" else "LID: --"
-        canvas.drawText(idText, 70f, y + 36, textPaint)
-        
-        val (lx, ly) = entityStore?.getLocalPlayerPosition() ?: Pair(0f, 0f)
-        canvas.drawText("POS: ${lx.toInt()},${ly.toInt()}", 4f, y + 48, textPaintSmall)
+    /**
+     * Draw radar background circle
+     */
+    private fun drawRadarBackground(canvas: Canvas, centerX: Float, centerY: Float, radius: Float) {
+        // Semi-transparent dark background
+        fillPaint.color = Color.argb(40, 0, 0, 0)
+        canvas.drawCircle(centerX, centerY, radius, fillPaint)
+
+        // Border circle
+        canvas.drawCircle(centerX, centerY, radius, borderPaint)
     }
 
+    /**
+     * Draw grid lines
+     */
+    private fun drawGrid(canvas: Canvas, centerX: Float, centerY: Float, radius: Float) {
+        // Cross-hair
+        canvas.drawLine(centerX - radius, centerY, centerX + radius, centerY, borderPaint)
+        canvas.drawLine(centerX, centerY - radius, centerX, centerY + radius, borderPaint)
+
+        // Inner circle (half range)
+        borderPaint.color = Color.argb(60, 255, 255, 255)
+        canvas.drawCircle(centerX, centerY, radius / 2, borderPaint)
+        borderPaint.color = Color.argb(100, 255, 255, 255)
+    }
+
+    /**
+     * Draw all entities
+     */
+    private fun drawEntities(
+        canvas: Canvas,
+        entities: List<RadarEntity>,
+        centerX: Float,
+        centerY: Float,
+        localX: Float,
+        localY: Float,
+        scale: Float,
+        radarRadius: Float
+    ) {
+        for (entity in entities) {
+            // Apply visibility filters
+            if (!shouldDrawEntity(entity)) continue
+
+            // Calculate screen position
+            val screenX = centerX + (entity.worldX - localX) * scale
+            val screenY = centerY - (entity.worldY - localY) * scale
+
+            // Check if within radar circle
+            val dx = screenX - centerX
+            val dy = screenY - centerY
+            if (dx * dx + dy * dy > radarRadius * radarRadius) continue
+
+            // Draw entity
+            drawEntity(canvas, entity, screenX, screenY)
+        }
+    }
+
+    /**
+     * Check if entity should be drawn based on type filters
+     */
+    private fun shouldDrawEntity(entity: RadarEntity): Boolean {
+        return when {
+            entity.isResource() -> showResources
+            entity.isMob() -> showMobs
+            entity.isPlayer() -> showPlayers
+            entity.type == EntityType.CHEST -> showChests
+            entity.type == EntityType.DUNGEON_PORTAL -> showDungeons
+            entity.type == EntityType.SILVER -> showSilver
+            entity.type == EntityType.MIST_WISP -> showMist
+            entity.type == EntityType.UNKNOWN -> showUnknown
+            else -> true
+        }
+    }
+
+    /**
+     * Draw a single entity
+     */
     private fun drawEntity(canvas: Canvas, entity: RadarEntity, x: Float, y: Float) {
-        val paint = entityPaints[entity.type] ?: return
-
-        val size: Float = when {
-            entity.isBoss -> entityDotSize * 2f
-            entity.isElite -> entityDotSize * 1.5f
-            entity.isResource() -> entityDotSize * 0.8f
-            else -> entityDotSize
-        }
-
-        canvas.drawCircle(x, y, size, paint)
-
-        if (entity.isResource() && entity.enchantment.level > 0) {
-            val ringColor = entity.enchantment.ringColorHex
-            if (ringColor != null) {
-                val ringPaint = Paint().apply {
-                    color = try {
-                        Color.parseColor(ringColor)
-                    } catch (e: Exception) {
-                        Color.WHITE
-                    }
-                    style = Paint.Style.STROKE
-                    strokeWidth = 2f
-                    isAntiAlias = true
-                }
-                canvas.drawCircle(x, y, size + 3f, ringPaint)
-            }
-        }
-
-        if (entity.type == EntityType.PLAYER || entity.type == EntityType.HOSTILE_PLAYER) {
-            if (entity.name.isNotEmpty()) {
-                canvas.drawText(entity.name, x + size + 2f, y + 4f, textPaint)
-            }
+        when {
+            entity.isResource() -> drawResource(canvas, entity, x, y)
+            entity.isMob() -> drawMob(canvas, entity, x, y)
+            entity.isPlayer() -> drawPlayer(canvas, entity, x, y)
+            entity.type == EntityType.CHEST -> drawChest(canvas, x, y)
+            entity.type == EntityType.DUNGEON_PORTAL -> drawDungeon(canvas, x, y)
+            entity.type == EntityType.SILVER -> drawSilver(canvas, x, y)
+            entity.type == EntityType.MIST_WISP -> drawMist(canvas, entity, x, y)
+            else -> drawUnknown(canvas, x, y)
         }
     }
 
+    /**
+     * Draw resource node
+     */
+    private fun drawResource(canvas: Canvas, entity: RadarEntity, x: Float, y: Float) {
+        val tier = (entity.tier - 1).coerceIn(0, 7)
+        val enchant = entity.enchant.coerceIn(0, 4)
+
+        // Base dot
+        val color = resourceColors[tier]
+        fillPaint.color = color
+
+        val size = DOT_SIZE_NORMAL + (entity.tier - 1) * 0.5f
+        canvas.drawCircle(x, y, size, fillPaint)
+
+        // Enchant ring
+        if (enchant > 0) {
+            strokePaint.color = enchantColors[enchant]
+            canvas.drawCircle(x, y, size + 3f, strokePaint)
+        }
+    }
+
+    /**
+     * Draw mob
+     */
+    private fun drawMob(canvas: Canvas, entity: RadarEntity, x: Float, y: Float) {
+        val color = mobColors[entity.type] ?: Color.GREEN
+        fillPaint.color = color
+
+        val size = when (entity.type) {
+            EntityType.BOSS_MOB -> DOT_SIZE_XL
+            EntityType.ENCHANTED_MOB -> DOT_SIZE_LARGE
+            else -> DOT_SIZE_NORMAL
+        }
+
+        canvas.drawCircle(x, y, size, fillPaint)
+
+        // Enchant ring for enchanted mobs
+        if (entity.enchant > 0 && entity.type != EntityType.BOSS_MOB) {
+            strokePaint.color = enchantColors[entity.enchant.coerceIn(0, 4)]
+            canvas.drawCircle(x, y, size + 2f, strokePaint)
+        }
+    }
+
+    /**
+     * Draw player
+     */
+    private fun drawPlayer(canvas: Canvas, entity: RadarEntity, x: Float, y: Float) {
+        // Color based on hostility
+        fillPaint.color = if (entity.isHostile) {
+            Color.argb(255, 255, 50, 50) // Red
+        } else {
+            Color.argb(255, 255, 255, 255) // White
+        }
+
+        canvas.drawCircle(x, y, DOT_SIZE_LARGE, fillPaint)
+
+        // Draw name if available
+        if (entity.name.isNotEmpty()) {
+            canvas.drawText(entity.name, x + DOT_SIZE_LARGE + 2, y + 4, textPaint)
+        }
+    }
+
+    /**
+     * Draw chest
+     */
+    private fun drawChest(canvas: Canvas, x: Float, y: Float) {
+        fillPaint.color = Color.argb(220, 255, 193, 7) // Gold
+        val size = DOT_SIZE_NORMAL
+        canvas.drawRect(
+            x - size, y - size,
+            x + size, y + size,
+            fillPaint
+        )
+    }
+
+    /**
+     * Draw dungeon portal
+     */
+    private fun drawDungeon(canvas: Canvas, x: Float, y: Float) {
+        fillPaint.color = Color.argb(220, 150, 150, 150) // Gray
+        val size = DOT_SIZE_LARGE
+        val path = Path().apply {
+            moveTo(x, y - size)
+            lineTo(x + size, y + size * 0.6f)
+            lineTo(x - size, y + size * 0.6f)
+            close()
+        }
+        canvas.drawPath(path, fillPaint)
+    }
+
+    /**
+     * Draw silver
+     */
+    private fun drawSilver(canvas: Canvas, x: Float, y: Float) {
+        fillPaint.color = Color.argb(220, 255, 235, 59) // Yellow
+        canvas.drawCircle(x, y, DOT_SIZE_SMALL, fillPaint)
+    }
+
+    /**
+     * Draw mist wisp
+     */
+    private fun drawMist(canvas: Canvas, entity: RadarEntity, x: Float, y: Float) {
+        fillPaint.color = Color.argb(200, 200, 200, 200) // Light gray
+        val size = DOT_SIZE_NORMAL
+        val path = Path().apply {
+            moveTo(x, y - size)
+            lineTo(x + size, y)
+            lineTo(x, y + size)
+            lineTo(x - size, y)
+            close()
+        }
+        canvas.drawPath(path, fillPaint)
+    }
+
+    /**
+     * Draw unknown entity
+     */
+    private fun drawUnknown(canvas: Canvas, x: Float, y: Float) {
+        fillPaint.color = Color.argb(150, 128, 128, 128)
+        canvas.drawCircle(x, y, DOT_SIZE_SMALL, fillPaint)
+    }
+
+    /**
+     * Draw local player at center
+     */
+    private fun drawLocalPlayer(canvas: Canvas, centerX: Float, centerY: Float) {
+        // Outer glow
+        fillPaint.color = Color.argb(100, 0, 255, 255)
+        canvas.drawCircle(centerX, centerY, DOT_SIZE_XL + 4, fillPaint)
+
+        // Main dot
+        canvas.drawCircle(centerX, centerY, DOT_SIZE_LARGE, selfPaint)
+    }
+
+    /**
+     * Trigger redraw - call from overlay service refresh loop
+     */
     fun refresh() {
         invalidate()
+    }
+
+    /**
+     * Get current scale factor
+     */
+    fun getScale(): Float {
+        val radarRadius = minOf(width, height) / 2f - 10f
+        return radarRadius / worldRange
+    }
+
+    /**
+     * Convert screen coordinates to world coordinates
+     */
+    fun screenToWorld(screenX: Float, screenY: Float): Pair<Float, Float> {
+        val centerX = width / 2f
+        val centerY = height / 2f
+        val scale = getScale()
+        val (localX, localY) = EntityStore.getLocalPlayerPosition()
+
+        val worldX = localX + (screenX - centerX) / scale
+        val worldY = localY - (screenY - centerY) / scale
+
+        return Pair(worldX, worldY)
     }
 }
