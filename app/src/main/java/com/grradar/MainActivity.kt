@@ -1,209 +1,373 @@
 package com.grradar
 
-import android.app.AlertDialog
+import android.app.Activity
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.net.Uri
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
 import android.widget.Button
-import android.widget.Switch
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import com.grradar.data.IdMapRepository
+import com.grradar.data.EntityStore
 import com.grradar.logger.DiscoveryLogger
 import com.grradar.overlay.RadarOverlayService
 import com.grradar.vpn.AlbionVpnService
 
+/**
+ * MainActivity — Main entry point and permission flow
+ *
+ * PERMISSION SEQUENCE:
+ *   1. Check SYSTEM_ALERT_WINDOW (overlay) permission
+ *      - If not granted, launch Settings.ACTION_MANAGE_OVERLAY_PERMISSION
+ *   2. Check VPN permission via VpnService.prepare()
+ *      - If returns non-null intent, launch VPN permission request
+ *   3. Both granted → Enable START button
+ *
+ * FEATURES:
+ *   - Start/Stop radar controls
+ *   - Status display (VPN, overlay, entity counts)
+ *   - Log file location display
+ *   - Statistics updates
+ *
+ * BROADCAST RECEIVERS:
+ *   - VPN_STATUS: Updates when VPN starts/stops
+ *   - OVERLAY_STATUS: Updates when overlay starts/stops
+ */
 class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "MainActivity"
-        private const val VPN_REQUEST_CODE = 1001
+        private const val REQUEST_OVERLAY_PERMISSION = 1001
+        private const val REQUEST_VPN_PERMISSION = 1002
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // VIEWS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private lateinit var scrollRoot: ScrollView
     private lateinit var statusText: TextView
     private lateinit var statsText: TextView
-    private lateinit var vpnSwitch: Switch
-    private lateinit var overlaySwitch: Switch
+    private lateinit var logPathText: TextView
+    private lateinit var startButton: Button
+    private lateinit var stopButton: Button
     private lateinit var clearLogButton: Button
 
-    private var vpnRunning = false
-    private var overlayRunning = false
+    // ═══════════════════════════════════════════════════════════════════════════
+    // STATE
+    // ═══════════════════════════════════════════════════════════════════════════
 
-    private val vpnStatusReceiver = object : BroadcastReceiver() {
+    private var vpnGranted = false
+    private var overlayGranted = false
+    private var isRadarRunning = false
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // BROADCAST RECEIVER
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            val running = intent?.getBooleanExtra("running", false) ?: false
-            vpnRunning = running
-            updateUI()
-            Log.i(TAG, "VPN status changed: $running")
-            DiscoveryLogger.i("VPN status changed: $running")
+            when (intent?.action) {
+                AlbionVpnService.BROADCAST_VPN_STATUS -> {
+                    val running = intent.getBooleanExtra("running", false)
+                    runOnUiThread {
+                        updateStatus()
+                    }
+                }
+                RadarOverlayService.BROADCAST_OVERLAY_STATUS -> {
+                    val running = intent.getBooleanExtra("running", false)
+                    runOnUiThread {
+                        updateStatus()
+                    }
+                }
+            }
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // LIFECYCLE
+    // ═══════════════════════════════════════════════════════════════════════════
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        DiscoveryLogger.i("GRRadar Application started")
+        Log.i(TAG, "MainActivity created")
+
+        // Find views
+        findViews()
+
+        // Setup button listeners
+        setupButtons()
+
+        // Initial state
+        stopButton.isEnabled = false
+        updateStatus()
+
+        // Check permissions
+        checkPermissions()
+    }
+
+    private fun findViews() {
+        scrollRoot = findViewById(R.id.scrollRoot)
         statusText = findViewById(R.id.statusText)
         statsText = findViewById(R.id.statsText)
-        vpnSwitch = findViewById(R.id.vpnSwitch)
-        overlaySwitch = findViewById(R.id.overlaySwitch)
+        logPathText = findViewById(R.id.logPathText)
+        startButton = findViewById(R.id.startButton)
+        stopButton = findViewById(R.id.stopButton)
         clearLogButton = findViewById(R.id.clearLogButton)
 
-        // Initialize logger
-        DiscoveryLogger.start(this)
-        DiscoveryLogger.i("MainActivity created")
+        // Show log file path
+        logPathText.text = "Log: /sdcard/Android/data/com.grradar/files/discovery_log.txt"
+    }
 
-        // Initialize IdMapRepository
-        IdMapRepository.getInstance().initialize(this)
+    private fun setupButtons() {
+        startButton.setOnClickListener {
+            startRadar()
+        }
 
-        setupListeners()
-        updateUI()
+        stopButton.setOnClickListener {
+            stopRadar()
+        }
+
+        clearLogButton.setOnClickListener {
+            clearEntities()
+        }
     }
 
     override fun onResume() {
         super.onResume()
-        
+
+        // Re-check permissions when returning to activity
+        checkPermissions()
+        updateStatus()
+
+        // Register broadcast receivers
+        val filter = IntentFilter().apply {
+            addAction(AlbionVpnService.BROADCAST_VPN_STATUS)
+            addAction(RadarOverlayService.BROADCAST_OVERLAY_STATUS)
+        }
         val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             RECEIVER_NOT_EXPORTED
         } else {
             0
         }
-        registerReceiver(vpnStatusReceiver, IntentFilter(AlbionVpnService.BROADCAST_VPN_STATUS), flags)
-        
-        vpnRunning = AlbionVpnService.isRunning()
-        overlayRunning = RadarOverlayService.isRunning()
-        updateUI()
+        registerReceiver(statusReceiver, filter, flags)
+
+        // Start periodic status updates
+        startStatusUpdates()
     }
 
     override fun onPause() {
         super.onPause()
-        runCatching { unregisterReceiver(vpnStatusReceiver) }
+        runCatching { unregisterReceiver(statusReceiver) }
+        stopStatusUpdates()
     }
 
-    private fun setupListeners() {
-        vpnSwitch.setOnCheckedChangeListener { _, isChecked ->
-            if (isChecked && !vpnRunning) {
-                startVpn()
-            } else if (!isChecked && vpnRunning) {
-                stopVpn()
-            }
-        }
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PERMISSIONS
+    // ═══════════════════════════════════════════════════════════════════════════
 
-        overlaySwitch.setOnCheckedChangeListener { _, isChecked ->
-            if (isChecked && !overlayRunning) {
-                startOverlay()
-            } else if (!isChecked && overlayRunning) {
-                stopOverlay()
-            }
-        }
+    private fun checkPermissions() {
+        // Check overlay permission
+        overlayGranted = Settings.canDrawOverlays(this)
 
-        clearLogButton.setOnClickListener {
-            DiscoveryLogger.clearLog()
-            Toast.makeText(this, "Log cleared", Toast.LENGTH_SHORT).show()
-        }
-    }
+        DiscoveryLogger.d("Permissions check: overlay=$overlayGranted, vpn=$vpnGranted")
+        Log.d(TAG, "Permissions: overlay=$overlayGranted, vpn=$vpnGranted")
 
-    private fun startVpn() {
-        val intent = VpnService.prepare(this)
-        if (intent != null) {
-            startActivityForResult(intent, VPN_REQUEST_CODE)
-        } else {
-            onActivityResult(VPN_REQUEST_CODE, RESULT_OK, null)
-        }
-    }
-
-    private fun stopVpn() {
-        val intent = Intent(this, AlbionVpnService::class.java).apply {
-            action = AlbionVpnService.ACTION_STOP
-        }
-        startService(intent)
-        vpnRunning = false
-        updateUI()
-    }
-
-    private fun startOverlay() {
-        if (!Settings.canDrawOverlays(this)) {
-            AlertDialog.Builder(this)
-                .setTitle("Overlay Permission Required")
-                .setMessage("GRRadar needs overlay permission to display the radar over the game.")
-                .setPositiveButton("Grant") { _, _ ->
-                    val intent = Intent(
-                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                        android.net.Uri.parse("package:$packageName")
-                    )
-                    startActivity(intent)
-                }
-                .setNegativeButton("Cancel", null)
-                .show()
-            overlaySwitch.isChecked = false
+        if (!overlayGranted) {
+            DiscoveryLogger.i("Requesting overlay permission")
+            requestOverlayPermission()
             return
         }
 
-        val intent = Intent(this, RadarOverlayService::class.java).apply {
-            action = RadarOverlayService.ACTION_START
+        // Check VPN permission
+        val vpnIntent = VpnService.prepare(this)
+        vpnGranted = vpnIntent == null
+
+        if (!vpnGranted && vpnIntent != null) {
+            DiscoveryLogger.i("Requesting VPN permission")
+            startActivityForResult(vpnIntent, REQUEST_VPN_PERMISSION)
+            return
         }
-        startService(intent)
-        overlayRunning = true
-        updateUI()
-        
-        DiscoveryLogger.i("Overlay started")
+
+        // All permissions granted
+        updateButtonStates()
     }
 
-    private fun stopOverlay() {
-        val intent = Intent(this, RadarOverlayService::class.java).apply {
-            action = RadarOverlayService.ACTION_STOP
-        }
-        startService(intent)
-        overlayRunning = false
-        updateUI()
-        
-        DiscoveryLogger.i("Overlay stopped")
+    private fun requestOverlayPermission() {
+        val intent = Intent(
+            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+            Uri.parse("package:$packageName")
+        )
+        startActivityForResult(intent, REQUEST_OVERLAY_PERMISSION)
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        
-        if (requestCode == VPN_REQUEST_CODE) {
-            if (resultCode == RESULT_OK) {
-                val intent = Intent(this, AlbionVpnService::class.java).apply {
-                    action = AlbionVpnService.ACTION_START
+
+        when (requestCode) {
+            REQUEST_OVERLAY_PERMISSION -> {
+                overlayGranted = Settings.canDrawOverlays(this)
+                if (overlayGranted) {
+                    DiscoveryLogger.i("Overlay permission granted")
+                    Toast.makeText(this, "Overlay permission granted", Toast.LENGTH_SHORT).show()
+                    checkPermissions() // Continue to VPN check
+                } else {
+                    DiscoveryLogger.w("Overlay permission denied")
+                    Toast.makeText(this, "Overlay permission required for radar display", Toast.LENGTH_LONG).show()
                 }
-                startService(intent)
-                vpnRunning = true
-                updateUI()
-                DiscoveryLogger.i("VPN started")
-            } else {
-                vpnSwitch.isChecked = false
-                Toast.makeText(this, "VPN permission denied", Toast.LENGTH_SHORT).show()
-                DiscoveryLogger.w("VPN permission denied")
+            }
+            REQUEST_VPN_PERMISSION -> {
+                vpnGranted = resultCode == Activity.RESULT_OK
+                if (vpnGranted) {
+                    DiscoveryLogger.i("VPN permission granted")
+                    Toast.makeText(this, "VPN permission granted", Toast.LENGTH_SHORT).show()
+                } else {
+                    DiscoveryLogger.w("VPN permission denied")
+                    Toast.makeText(this, "VPN permission required for traffic capture", Toast.LENGTH_LONG).show()
+                }
+                updateButtonStates()
             }
         }
     }
 
-    private fun updateUI() {
-        vpnSwitch.isChecked = vpnRunning
-        overlaySwitch.isChecked = overlayRunning
+    private fun updateButtonStates() {
+        startButton.isEnabled = overlayGranted && vpnGranted && !isRadarRunning
+        stopButton.isEnabled = isRadarRunning
+    }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // RADAR CONTROL
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private fun startRadar() {
+        if (!overlayGranted || !vpnGranted) {
+            Toast.makeText(this, "Please grant all permissions first", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        DiscoveryLogger.i("Starting radar...")
+        Log.i(TAG, "Starting radar")
+
+        // Start VPN service
+        val vpnIntent = Intent(this, AlbionVpnService::class.java).apply {
+            action = AlbionVpnService.ACTION_START
+        }
+        startService(vpnIntent)
+
+        // Start overlay service
+        val overlayIntent = Intent(this, RadarOverlayService::class.java).apply {
+            action = RadarOverlayService.ACTION_START
+        }
+        startService(overlayIntent)
+
+        isRadarRunning = true
+        updateButtonStates()
+
+        Toast.makeText(this, "Radar started", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun stopRadar() {
+        DiscoveryLogger.i("Stopping radar...")
+        Log.i(TAG, "Stopping radar")
+
+        // Stop overlay
+        val overlayIntent = Intent(this, RadarOverlayService::class.java).apply {
+            action = RadarOverlayService.ACTION_STOP
+        }
+        startService(overlayIntent)
+
+        // Stop VPN
+        val vpnIntent = Intent(this, AlbionVpnService::class.java).apply {
+            action = AlbionVpnService.ACTION_STOP
+        }
+        startService(vpnIntent)
+
+        isRadarRunning = false
+        updateButtonStates()
+
+        Toast.makeText(this, "Radar stopped", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun clearEntities() {
+        EntityStore.clearAll()
+        DiscoveryLogger.i("Entities cleared by user")
+        Toast.makeText(this, "Entities cleared", Toast.LENGTH_SHORT).show()
+        updateStatus()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // STATUS UPDATES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private var statusUpdateRunnable: Runnable? = null
+    private val statusUpdateHandler = android.os.Handler(mainLooper)
+
+    private fun startStatusUpdates() {
+        statusUpdateRunnable = object : Runnable {
+            override fun run() {
+                updateStatus()
+                statusUpdateHandler.postDelayed(this, 1000) // Update every second
+            }
+        }
+        statusUpdateHandler.post(statusUpdateRunnable!!)
+    }
+
+    private fun stopStatusUpdates() {
+        statusUpdateRunnable?.let {
+            statusUpdateHandler.removeCallbacks(it)
+        }
+    }
+
+    private fun updateStatus() {
+        val vpnRunning = AlbionVpnService.isRunning
+        val overlayRunning = RadarOverlayService.isRunning
+
+        isRadarRunning = vpnRunning && overlayRunning
+        updateButtonStates()
+
+        // Build status text
         val status = buildString {
-            append("VPN: ${if (vpnRunning) "Running" else "Stopped"}\n")
-            append("Overlay: ${if (overlayRunning) "Running" else "Stopped"}\n")
-            append("Packets: ${AlbionVpnService.packetCount.get()}\n")
-            append("Albion: ${AlbionVpnService.albionCount.get()}\n")
-            append("Entities: ${AlbionVpnService.entityCount}")
+            append("═══════════════════════════════════\n")
+            append("STATUS\n")
+            append("═══════════════════════════════════\n")
+            append("VPN: ${if (vpnRunning) "● Running" else "○ Stopped"}\n")
+            append("Overlay: ${if (overlayRunning) "● Running" else "○ Stopped"}\n")
+            append("Permissions:\n")
+            append("  Overlay: ${if (overlayGranted) "✓" else "✗"}\n")
+            append("  VPN: ${if (vpnGranted) "✓" else "✗"}\n")
         }
         statusText.text = status
 
-        val logPath = DiscoveryLogger.getLogFilePath()
+        // Build stats text
         val stats = buildString {
-            append("Log: $logPath\n")
-            append("Events logged: ${DiscoveryLogger.getEventCount()}")
+            append("═══════════════════════════════════\n")
+            append("STATISTICS\n")
+            append("═══════════════════════════════════\n")
+            append("Packets: ${AlbionVpnService.packetCount.get()}\n")
+            append("Albion: ${AlbionVpnService.albionCount.get()}\n")
+            append("Entities: ${EntityStore.entityCount}\n")
+            append("  Resources: ${EntityStore.resourceCount}\n")
+            append("  Mobs: ${EntityStore.mobCount}\n")
+            append("  Players: ${EntityStore.playerCount}\n")
+            append("Local Player ID: ${EntityStore.localPlayerId}\n")
+
+            val (localX, localY) = EntityStore.getLocalPlayerPosition()
+            append("Position: (${localX.toInt()}, ${localY.toInt()})\n")
+
+            if (EntityStore.currentZone.isNotEmpty()) {
+                append("Zone: ${EntityStore.currentZone}\n")
+            }
         }
         statsText.text = stats
     }
