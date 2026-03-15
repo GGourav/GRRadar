@@ -44,8 +44,6 @@ class EventDispatcher(
     
     private fun dispatchEvent(eventName: String, params: Map<Int, Any?>) {
         Log.d(TAG, "Event: $eventName with ${params.size} params")
-        DiscoveryLogger.d("Event received: $eventName (${params.size} params)")
-        
         DiscoveryLogger.logEvent(eventName, params)
         
         when (eventName) {
@@ -59,7 +57,7 @@ class EventDispatcher(
             Events.LEAVE -> handleLeave(params)
             Events.MOVE -> handleMove(params)
             Events.CHANGE_CLUSTER -> handleChangeCluster(params)
-            else -> Log.v(TAG, "Unhandled event: $eventName")
+            else -> Log.v(TAG, "Unhandled: $eventName")
         }
     }
     
@@ -69,8 +67,8 @@ class EventDispatcher(
         var posX = parser.getFloat(params, keys.posXKey)
         var posY = parser.getFloat(params, keys.posYKey)
         
-        Log.i(TAG, "JoinFinished: id=$objectId rawPos=($posX,$posY)")
-        DiscoveryLogger.i("JoinFinished: id=$objectId rawPos=($posX,$posY)")
+        Log.i(TAG, "JoinFinished: id=$objectId pos=($posX,$posY)")
+        DiscoveryLogger.i("JoinFinished: id=$objectId pos=($posX,$posY)")
         
         if (posX == 0f && posY == 0f) {
             val planB = idMapRepo.getCoordinatePlanB()
@@ -78,16 +76,14 @@ class EventDispatcher(
             if (coords != null) {
                 posX = coords.first
                 posY = coords.second
-                Log.i(TAG, "JoinFinished PlanB coords: ($posX,$posY)")
-                DiscoveryLogger.i("JoinFinished PlanB coords: ($posX,$posY)")
+                Log.i(TAG, "JoinFinished PlanB: ($posX,$posY)")
+                DiscoveryLogger.i("JoinFinished PlanB: ($posX,$posY)")
             }
         }
         
         entityStore.setLocalPlayerId(objectId)
         entityStore.setLocalPlayerPosition(posX, posY)
         entityStore.clearAll()
-        
-        DiscoveryLogger.i("JoinFinished complete: localId=$objectId pos=($posX,$posY)")
     }
     
     private fun handleNewCharacter(params: Map<Int, Any?>) {
@@ -104,15 +100,12 @@ class EventDispatcher(
         if (posX == 0f && posY == 0f) {
             val planB = idMapRepo.getCoordinatePlanB()
             val coords = parser.scanForCoordinates(params, planB.minValid.toFloat(), planB.maxValid.toFloat())
-            if (coords != null) {
-                posX = coords.first
-                posY = coords.second
-            }
+            if (coords != null) { posX = coords.first; posY = coords.second }
         }
         
         if (objectId == entityStore.getLocalPlayerId()) {
             entityStore.setLocalPlayerPosition(posX, posY)
-            Log.d(TAG, "Local player position updated: ($posX,$posY)")
+            Log.d(TAG, "Local player moved: ($posX,$posY)")
             return
         }
         
@@ -127,9 +120,8 @@ class EventDispatcher(
             allianceName = alliance
         )
         entityStore.putEntity(entity)
-        
-        Log.d(TAG, "NewPlayer: $name at ($posX,$posY)")
-        DiscoveryLogger.i("NewPlayer: id=$objectId name='$name' at ($posX,$posY)")
+        Log.d(TAG, "Player: $name at ($posX,$posY)")
+        DiscoveryLogger.i("NewPlayer: $name at ($posX,$posY)")
     }
     
     private fun handleNewMob(params: Map<Int, Any?>) {
@@ -142,17 +134,12 @@ class EventDispatcher(
         var typeName = parser.getString(params, mobKeys.typeNameKey)
         var tier = parser.getInt(params, mobKeys.tierKey)
         
-        if (typeName.isEmpty()) {
-            typeName = parser.scanForTierPrefix(params) ?: ""
-        }
+        typeName = if (typeName.isEmpty()) parser.scanForTierPrefix(params) ?: "" else typeName
         
         if (posX == 0f && posY == 0f) {
             val planB = idMapRepo.getCoordinatePlanB()
             val coords = parser.scanForCoordinates(params, planB.minValid.toFloat(), planB.maxValid.toFloat())
-            if (coords != null) {
-                posX = coords.first
-                posY = coords.second
-            }
+            if (coords != null) { posX = coords.first; posY = coords.second }
         }
         
         tier = if (tier > 0) tier else idMapRepo.extractTier(typeName)
@@ -169,9 +156,8 @@ class EventDispatcher(
             enchantment = enchant
         )
         entityStore.putEntity(entity)
-        
-        Log.d(TAG, "NewMob: $typeName at ($posX,$posY)")
-        DiscoveryLogger.i("NewMob: id=$objectId type='$typeName' at ($posX,$posY)")
+        Log.d(TAG, "Mob: $typeName at ($posX,$posY)")
+        DiscoveryLogger.i("NewMob: $typeName at ($posX,$posY)")
     }
     
     private fun handleNewHarvestable(params: Map<Int, Any?>) {
@@ -184,17 +170,12 @@ class EventDispatcher(
         var typeName = parser.getString(params, harvestKeys.typeNameKey)
         var tier = parser.getInt(params, harvestKeys.tierKey)
         
-        if (typeName.isEmpty()) {
-            typeName = parser.scanForTierPrefix(params) ?: ""
-        }
+        typeName = if (typeName.isEmpty()) parser.scanForTierPrefix(params) ?: "" else typeName
         
         if (posX == 0f && posY == 0f) {
             val planB = idMapRepo.getCoordinatePlanB()
             val coords = parser.scanForCoordinates(params, planB.minValid.toFloat(), planB.maxValid.toFloat())
-            if (coords != null) {
-                posX = coords.first
-                posY = coords.second
-            }
+            if (coords != null) { posX = coords.first; posY = coords.second }
         }
         
         tier = if (tier > 0) tier else idMapRepo.extractTier(typeName)
@@ -211,20 +192,16 @@ class EventDispatcher(
             enchantment = enchant
         )
         entityStore.putEntity(entity)
-        
-        Log.d(TAG, "NewResource: $typeName at ($posX,$posY)")
-        DiscoveryLogger.i("NewResource: id=$objectId type='$typeName' at ($posX,$posY)")
+        Log.d(TAG, "Resource: $typeName at ($posX,$posY)")
+        DiscoveryLogger.i("NewResource: $typeName at ($posX,$posY)")
     }
     
     private fun handleHarvestableList(params: Map<Int, Any?>) {
         val list = parser.getList(params, 2)
-        if (list != null) {
-            DiscoveryLogger.i("HarvestableList: ${list.size} items")
-            list.forEach { item ->
-                if (item is Map<*, *>) {
-                    @Suppress("UNCHECKED_CAST")
-                    handleNewHarvestable(item as Map<Int, Any?>)
-                }
+        list?.forEach { 
+            if (it is Map<*, *>) {
+                @Suppress("UNCHECKED_CAST")
+                handleNewHarvestable(it as Map<Int, Any?>)
             }
         }
     }
@@ -242,14 +219,13 @@ class EventDispatcher(
             typeName = "SILVER"
         )
         entityStore.putEntity(entity)
-        
-        DiscoveryLogger.i("NewSilver: id=$objectId at ($posX,$posY)")
+        DiscoveryLogger.i("Silver: at ($posX,$posY)")
     }
     
     private fun handleLeave(params: Map<Int, Any?>) {
         val objectId = parser.getInt(params, 0)
         entityStore.removeEntity(objectId)
-        Log.d(TAG, "Entity removed: $objectId")
+        Log.d(TAG, "Entity left: $objectId")
     }
     
     private fun handleMove(params: Map<Int, Any?>) {
@@ -267,8 +243,8 @@ class EventDispatcher(
     }
     
     private fun handleChangeCluster(params: Map<Int, Any?>) {
-        Log.i(TAG, "ChangeCluster - clearing all entities")
-        DiscoveryLogger.i("ChangeCluster - zone change, clearing entities")
+        Log.i(TAG, "Zone change - clearing entities")
+        DiscoveryLogger.i("Zone change - clearing entities")
         entityStore.clearAll()
     }
 }
