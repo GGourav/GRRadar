@@ -88,8 +88,6 @@ class AlbionVpnService : VpnService() {
         }
     }
 
-    private var albionPacketsLogged = 0
-
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
@@ -267,6 +265,8 @@ class AlbionVpnService : VpnService() {
             }
         }
 
+    private var albionPacketsLogged = 0
+    
     private fun handleUdp(
         buf: ByteArray, len: Int, ihl: Int,
         srcIp: ByteArray, dstIp: ByteArray
