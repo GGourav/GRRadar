@@ -2,449 +2,337 @@ package com.grradar.logger
 
 import android.content.Context
 import android.util.Log
-import com.google.gson.Gson
-import com.google.gson.GsonBuilder
-import kotlinx.coroutines.*
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.channels.trySendBlocking
 import java.io.File
 import java.io.FileWriter
 import java.io.PrintWriter
 import java.text.SimpleDateFormat
 import java.util.*
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Discovery Logger - Async param logger for debugging
- * 
- * Logs all Photon event params to a file for reverse engineering.
- * Use this when id_map.json keys are unknown or have shifted.
- * 
- * Log file location: /sdcard/Android/data/com.grradar/files/discovery_log.txt
- *                     OR context.getExternalFilesDir(null)/discovery_log.txt
- * 
- * Provides BOTH:
- * - Static methods (start/stop/i/w/e/d/v) for VPN service compatibility
- * - Instance methods (logEvent, logPacket, logNote) for detailed logging
+ * DiscoveryLogger — Async param logger for Photon events
+ *
+ * PURPOSE:
+ *   Logs all Photon event parameters to a file for analysis.
+ *   Use this to verify param keys after each Albion patch.
+ *
+ * OUTPUT:
+ *   /sdcard/Android/data/com.grradar/files/discovery_log.txt
+ *
+ * USAGE:
+ *   DiscoveryLogger.start(context)  // Call once in VPN service onCreate
+ *   DiscoveryLogger.i("Message")    // Info log
+ *   DiscoveryLogger.d("Message")    // Debug log
+ *   DiscoveryLogger.logPhotonEvent("NewCharacter", params)  // Log full event
+ *   DiscoveryLogger.stop()          // Call in VPN service onDestroy
+ *
+ * FEATURES:
+ *   - Async writing (doesn't block packet processing)
+ *   - Auto-rotates log when size exceeds MAX_LOG_SIZE
+ *   - Thread-safe queue-based implementation
+ *   - Detailed type information for all parameters
  */
-class DiscoveryLogger private constructor() {
-    
-    companion object {
-        private const val TAG = "DiscoveryLogger"
-        private const val MAX_LOG_SIZE = 10 * 1024 * 1024L // 10MB
-        private const val FLUSH_INTERVAL = 1000L // 1 second
-        
-        @Volatile
-        private var instance: DiscoveryLogger? = null
-        
-        // Static instance access for VPN service
-        private fun getInstance(): DiscoveryLogger {
-            return instance ?: synchronized(this) {
-                instance ?: DiscoveryLogger().also { instance = it }
-            }
-        }
-        
-        // ═══════════════════════════════════════════════════════════════════
-        // STATIC API - Used by AlbionVpnService
-        // ═══════════════════════════════════════════════════════════════════
-        
-        /**
-         * Start the logger with context
-         */
-        fun start(context: Context): Boolean {
-            return getInstance().initialize(context)
-        }
-        
-        /**
-         * Stop the logger
-         */
-        fun stop() {
-            getInstance().shutdown()
-        }
-        
-        /**
-         * Log info message
-         */
-        fun i(message: String) {
-            Log.i(TAG, message)
-            getInstance().logSimple("INFO", message)
-        }
-        
-        /**
-         * Log warning message
-         */
-        fun w(message: String) {
-            Log.w(TAG, message)
-            getInstance().logSimple("WARN", message)
-        }
-        
-        /**
-         * Log error message
-         */
-        fun e(message: String, throwable: Throwable? = null) {
-            Log.e(TAG, message, throwable)
-            val fullMsg = if (throwable != null) {
-                "$message\n${throwable.stackTraceToString()}"
-            } else {
-                message
-            }
-            getInstance().logSimple("ERROR", fullMsg)
-        }
-        
-        /**
-         * Log debug message
-         */
-        fun d(message: String) {
-            Log.d(TAG, message)
-            getInstance().logSimple("DEBUG", message)
-        }
-        
-        /**
-         * Log verbose message
-         */
-        fun v(message: String) {
-            Log.v(TAG, message)
-            getInstance().logSimple("VERBOSE", message)
-        }
-        
-        // ═══════════════════════════════════════════════════════════════════
-        // INSTANCE API - Used for detailed event logging
-        // ═══════════════════════════════════════════════════════════════════
-        
-        /**
-         * Log an event with its parameters (detailed)
-         */
-        fun logEvent(eventName: String, params: Map<Int, Any?>) {
-            getInstance().logEventDetailed(eventName, params)
-        }
-        
-        /**
-         * Log a raw packet (for debugging)
-         */
-        fun logPacket(packetHex: String, description: String = "") {
-            getInstance().logPacketDetailed(packetHex, description)
-        }
-        
-        /**
-         * Log a discovery note
-         */
-        fun logNote(note: String) {
-            getInstance().logNoteDetailed(note)
-        }
-        
-        /**
-         * Get log file path
-         */
-        fun getLogFilePath(): String? = getInstance().logFile?.absolutePath
-        
-        /**
-         * Get event count
-         */
-        fun getEventCount(): Long = getInstance().eventCounter.get()
-        
-        /**
-         * Clear log file
-         */
-        fun clearLog() {
-            getInstance().clearLogFile()
-        }
-    }
-    
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val logChannel = Channel<LogEntry>(capacity = Channel.UNLIMITED)
-    internal var logFile: File? = null
+object DiscoveryLogger {
+
+    private const val TAG = "DiscoveryLogger"
+    private const val MAX_LOG_SIZE = 5 * 1024 * 1024L // 5MB max log size
+
+    // File handles
+    private var logFile: File? = null
     private var writer: PrintWriter? = null
-    private val gson: Gson = GsonBuilder().setPrettyPrinting().create()
-    internal val eventCounter = AtomicLong(0)
+
+    // Async queue for log messages
+    private val queue = ConcurrentLinkedQueue<String>()
+
+    // Counters
+    private val eventCounter = AtomicLong(0)
+
+    // Threading
+    private var logThread: Thread? = null
+    private var running = false
+
+    // Date formatter for timestamps
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
-    
-    @Volatile
-    private var isRunning = false
-    
+
     /**
-     * Initialize the logger
+     * Start the logger - call once in VPN service onCreate
+     *
+     * @param context Application context for accessing external files dir
      */
-    fun initialize(context: Context): Boolean {
-        return try {
-            val filesDir = context.getExternalFilesDir(null) 
-                ?: File(context.filesDir, "logs")
-            
-            if (!filesDir.exists()) {
-                filesDir.mkdirs()
-            }
-            
-            logFile = File(filesDir, "discovery_log.txt")
-            
-            // Rotate if too large
-            rotateIfNeeded()
-            
-            // Start writer coroutine
-            startWriter()
-            
-            Log.i(TAG, "Logger initialized: ${logFile?.absolutePath}")
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to initialize logger: ${e.message}")
-            false
+    fun start(context: Context) {
+        if (running) {
+            Log.w(TAG, "DiscoveryLogger already running")
+            return
         }
-    }
-    
-    /**
-     * Start the async writer coroutine
-     */
-    private fun startWriter() {
-        if (isRunning) return
-        
-        isRunning = true
-        
-        scope.launch {
-            var lastFlush = System.currentTimeMillis()
-            
-            while (isRunning) {
-                try {
-                    // Use select for timeout-based flush
-                    val entry = withTimeoutOrNull(FLUSH_INTERVAL) {
-                        logChannel.receive()
-                    }
-                    
-                    if (entry != null) {
-                        writeEntry(entry)
-                    }
-                    
-                    // Periodic flush
-                    if (System.currentTimeMillis() - lastFlush > FLUSH_INTERVAL) {
-                        writer?.flush()
-                        lastFlush = System.currentTimeMillis()
-                    }
-                } catch (e: Exception) {
-                    if (e !is TimeoutCancellationException) {
-                        Log.w(TAG, "Writer error: ${e.message}")
-                    }
+
+        try {
+            // Create log directory if needed
+            val dir = File(context.getExternalFilesDir(null), "").apply { mkdirs() }
+
+            // Create or rotate log file
+            logFile = File(dir, "discovery_log.txt").apply {
+                if (exists() && length() > MAX_LOG_SIZE) {
+                    Log.i(TAG, "Rotating log file (size: ${length()})")
+                    delete()
                 }
             }
-            
-            // Final flush on shutdown
+
+            // Open writer in append mode
+            writer = PrintWriter(FileWriter(logFile, true), true)
+            running = true
+
+            // Start async writer thread
+            logThread = Thread({
+                while (running || queue.isNotEmpty()) {
+                    val line = queue.poll()
+                    if (line != null) {
+                        try {
+                            writer?.println(line)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Write error: ${e.message}")
+                        }
+                    } else {
+                        // Sleep briefly when queue is empty
+                        Thread.sleep(50)
+                    }
+                }
+                Log.d(TAG, "Logger thread exiting")
+            }, "DiscoveryLogger-Writer").apply {
+                priority = Thread.MIN_PRIORITY
+                start()
+            }
+
+            i("DiscoveryLogger started")
+            Log.i(TAG, "Log file: ${logFile?.absolutePath}")
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start logger: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Stop the logger - call in VPN service onDestroy
+     */
+    fun stop() {
+        Log.i(TAG, "Stopping DiscoveryLogger")
+        running = false
+
+        // Wait for writer thread to finish
+        logThread?.join(2000)
+
+        // Flush and close writer
+        try {
             writer?.flush()
             writer?.close()
-        }
-    }
-    
-    /**
-     * Log simple message (for static API)
-     */
-    internal fun logSimple(level: String, message: String) {
-        if (!isRunning) return
-        
-        val entry = LogEntry(
-            timestamp = System.currentTimeMillis(),
-            eventName = level,
-            description = message,
-            params = emptyMap()
-        )
-        
-        logChannel.trySendBlocking(entry)
-    }
-    
-    /**
-     * Log an event with its parameters (detailed)
-     */
-    internal fun logEventDetailed(eventName: String, params: Map<Int, Any?>) {
-        if (!isRunning) return
-        
-        val entry = LogEntry(
-            timestamp = System.currentTimeMillis(),
-            eventName = eventName,
-            params = params
-        )
-        
-        logChannel.trySendBlocking(entry)
-        eventCounter.incrementAndGet()
-    }
-    
-    /**
-     * Log a raw packet (for debugging)
-     */
-    internal fun logPacketDetailed(packetHex: String, description: String = "") {
-        if (!isRunning) return
-        
-        val entry = LogEntry(
-            timestamp = System.currentTimeMillis(),
-            eventName = "RAW_PACKET",
-            rawHex = packetHex,
-            description = description,
-            params = emptyMap()
-        )
-        
-        logChannel.trySendBlocking(entry)
-    }
-    
-    /**
-     * Log a discovery note
-     */
-    internal fun logNoteDetailed(note: String) {
-        if (!isRunning) return
-        
-        val entry = LogEntry(
-            timestamp = System.currentTimeMillis(),
-            eventName = "NOTE",
-            description = note,
-            params = emptyMap()
-        )
-        
-        logChannel.trySendBlocking(entry)
-    }
-    
-    /**
-     * Write an entry to the log file
-     */
-    private fun writeEntry(entry: LogEntry) {
-        try {
-            if (writer == null && logFile != null) {
-                writer = PrintWriter(FileWriter(logFile, true))
-            }
-            
-            val timestamp = dateFormat.format(Date(entry.timestamp))
-            
-            writer?.println("═".repeat(60))
-            writer?.println("[$timestamp] Event #${eventCounter.get()}")
-            writer?.println("═".repeat(60))
-            writer?.println("Event: ${entry.eventName}")
-            
-            if (entry.description.isNotEmpty()) {
-                writer?.println("Description: ${entry.description}")
-            }
-            
-            if (entry.rawHex.isNotEmpty()) {
-                writer?.println("Raw Hex: ${entry.rawHex}")
-            }
-            
-            if (entry.params.isNotEmpty()) {
-                writer?.println("Parameters:")
-                writer?.println(formatParams(entry.params))
-            }
-            
-            writer?.println()
-            
         } catch (e: Exception) {
-            Log.e(TAG, "Write error: ${e.message}")
+            Log.e(TAG, "Error closing writer: ${e.message}")
         }
+        writer = null
+        logFile = null
+
+        Log.i(TAG, "DiscoveryLogger stopped")
     }
-    
+
     /**
-     * Format parameters for logging
+     * Internal log method
      */
-    private fun formatParams(params: Map<Int, Any?>): String {
-        val sb = StringBuilder()
-        
-        // Sort by key for easier reading
-        params.toSortedMap().forEach { (key, value) ->
-            sb.append("  Key $key: ")
-            
-            when (value) {
-                null -> sb.append("null")
-                is ByteArray -> sb.append("ByteArray[${value.size}] = ${value.copyOfRange(0, minOf(16, value.size)).joinToString("") { "%02X".format(it) }}...")
-                is IntArray -> sb.append("IntArray[${value.size}] = ${value.take(16).toList()}")
-                is FloatArray -> sb.append("FloatArray[${value.size}] = ${value.take(16).toList()}")
-                is Array<*> -> {
-                    sb.append("Array[${value.size}]:\n")
-                    value.take(5).forEachIndexed { i, item ->
-                        sb.append("    [$i] ${formatValue(item)}\n")
-                    }
-                    if (value.size > 5) {
-                        sb.append("    ... and ${value.size - 5} more\n")
-                    }
-                }
-                is Map<*, *> -> {
-                    sb.append("Map[${value.size}]:\n")
-                    value.entries.take(5).forEach { (k, v) ->
-                        sb.append("    $k -> ${formatValue(v)}\n")
-                    }
-                    if (value.size > 5) {
-                        sb.append("    ... and ${value.size - 5} more\n")
-                    }
-                }
-                is List<*> -> {
-                    sb.append("List[${value.size}]:\n")
-                    value.take(5).forEachIndexed { i, item ->
-                        sb.append("    [$i] ${formatValue(item)}\n")
-                    }
-                    if (value.size > 5) {
-                        sb.append("    ... and ${value.size - 5} more\n")
-                    }
-                }
-                else -> sb.append(formatValue(value))
-            }
-            
-            sb.append("\n")
-        }
-        
-        return sb.toString()
+    private fun log(level: String, msg: String, eventNum: Long = eventCounter.get()) {
+        val ts = dateFormat.format(Date())
+        val line = """
+════════════════════════════════════════════════════════════
+[$ts] Event #$eventNum
+════════════════════════════════════════════════════════════
+Event: $level
+Description: $msg
+""".trimIndent()
+        queue.offer(line)
     }
-    
+
     /**
-     * Format a single value
+     * Info level log
+     */
+    fun i(msg: String) {
+        eventCounter.incrementAndGet()
+        log("INFO", msg, eventCounter.get())
+    }
+
+    /**
+     * Debug level log
+     */
+    fun d(msg: String) {
+        eventCounter.incrementAndGet()
+        log("DEBUG", msg, eventCounter.get())
+    }
+
+    /**
+     * Warning level log
+     */
+    fun w(msg: String) {
+        eventCounter.incrementAndGet()
+        log("WARN", msg, eventCounter.get())
+    }
+
+    /**
+     * Error level log with optional throwable
+     */
+    fun e(msg: String, t: Throwable? = null) {
+        eventCounter.incrementAndGet()
+        val fullMsg = if (t != null) {
+            "$msg\n${Log.getStackTraceString(t)}"
+        } else {
+            msg
+        }
+        log("ERROR", fullMsg, eventCounter.get())
+    }
+
+    /**
+     * Verbose level - skip for performance in production
+     */
+    fun v(msg: String) {
+        // Uncomment for debug builds:
+        // eventCounter.incrementAndGet()
+        // log("VERBOSE", msg, eventCounter.get())
+    }
+
+    /**
+     * Log a complete Photon event with all parameters
+     * This is the primary method for discovering param keys
+     *
+     * @param eventName The event name string (e.g., "NewCharacter", "NewMob")
+     * @param params Map of parameter keys to values
+     */
+    fun logPhotonEvent(eventName: String, params: Map<Int, Any?>) {
+        val sb = StringBuilder()
+        sb.append("PHOTON EVENT: $eventName\n")
+        sb.append("PARAMETER COUNT: ${params.size}\n")
+        sb.append("PARAMETERS:\n")
+
+        // Sort by key for easier reading
+        params.entries.sortedBy { it.key }.forEach { (key, value) ->
+            val typeStr = formatValue(value)
+            sb.append("  Key[$key] = $typeStr\n")
+        }
+
+        d(sb.toString())
+    }
+
+    /**
+     * Format a parameter value with type information
      */
     private fun formatValue(value: Any?): String {
         return when (value) {
             null -> "null"
-            is String -> "\"$value\""
-            is Float -> String.format("%.2f", value)
-            is Double -> String.format("%.4f", value)
-            is ByteArray -> "ByteArray[${value.size}]"
-            else -> value.toString()
-        }
-    }
-    
-    /**
-     * Rotate log file if too large
-     */
-    private fun rotateIfNeeded() {
-        val file = logFile ?: return
-        
-        if (file.exists() && file.length() > MAX_LOG_SIZE) {
-            val rotated = File(file.parent, "discovery_log_old.txt")
-            if (rotated.exists()) {
-                rotated.delete()
-            }
-            file.renameTo(rotated)
-            Log.i(TAG, "Rotated log file")
-        }
-    }
-    
-    /**
-     * Shutdown the logger
-     */
-    internal fun shutdown() {
-        isRunning = false
-        scope.cancel()
-        writer?.flush()
-        writer?.close()
-        writer = null
-    }
-    
-    /**
-     * Clear log file
-     */
-    internal fun clearLogFile() {
-        try {
-            writer?.close()
-            logFile?.delete()
-            writer = if (logFile != null) PrintWriter(FileWriter(logFile, false)) else null
-            eventCounter.set(0)
-            Log.i(TAG, "Log cleared")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to clear log: ${e.message}")
-        }
-    }
-}
 
-/**
- * Log entry data class
- */
-private data class LogEntry(
-    val timestamp: Long,
-    val eventName: String,
-    val params: Map<Int, Any?>,
-    val rawHex: String = "",
-    val description: String = ""
-)
+            is String -> {
+                val escaped = value.take(100) + if (value.length > 100) "..." else ""
+                "String(len=${value.length}): \"$escaped\""
+            }
+
+            is Int -> "Int: $value (0x${value.toString(16)})"
+
+            is Long -> "Long: $value"
+
+            is Float -> {
+                val formatted = String.format("%.2f", value)
+                "Float: $formatted"
+            }
+
+            is Double -> {
+                val formatted = String.format("%.4f", value)
+                "Double: $formatted"
+            }
+
+            is Boolean -> "Boolean: $value"
+
+            is Byte -> "Byte: $value (0x${value.toString(16)})"
+
+            is Short -> "Short: $value"
+
+            is ByteArray -> {
+                val hex = value.take(32).joinToString("") {
+                    "%02X".format(it)
+                }
+                "ByteArray(len=${value.size}): $hex${if (value.size > 32) "..." else ""}"
+            }
+
+            is IntArray -> {
+                val preview = value.take(8).toList()
+                "IntArray(len=${value.size}): $preview${if (value.size > 8) "..." else ""}"
+            }
+
+            is FloatArray -> {
+                val preview = value.take(4).map { String.format("%.1f", it) }
+                "FloatArray(len=${value.size}): $preview${if (value.size > 4) "..." else ""}"
+            }
+
+            is List<*> -> {
+                "List(len=${value.size}): ${value.take(3)}${if (value.size > 3) "..." else ""}"
+            }
+
+            is Map<*, *> -> {
+                "Map(len=${value.size}): keys=${value.keys.take(5)}"
+            }
+
+            else -> "${value::class.simpleName ?: "Unknown"}: $value"
+        }
+    }
+
+    /**
+     * Log raw packet hex dump for debugging
+     */
+    fun logPacketHex(data: ByteArray, offset: Int, length: Int, note: String = "") {
+        if (length <= 0) return
+
+        val sb = StringBuilder()
+        sb.append("PACKET HEX DUMP ($length bytes)$note\n")
+
+        // Show first 256 bytes as hex
+        val bytesToShow = minOf(length, 256)
+        val hex = StringBuilder()
+        val ascii = StringBuilder()
+
+        for (i in 0 until bytesToShow) {
+            val b = data[offset + i]
+            hex.append("%02X ".format(b))
+
+            // Show printable ASCII
+            val c = (b.toInt() and 0xFF).toChar()
+            ascii.append(if (c.isLetterOrDigit() || c in "!@#\$%^&*()_+-=[]{}|;':\",./<>? ") c else '.')
+
+            // New line every 16 bytes
+            if ((i + 1) % 16 == 0) {
+                sb.append(hex.toString().padEnd(48))
+                sb.append(" | ")
+                sb.append(ascii)
+                sb.append("\n")
+                hex.clear()
+                ascii.clear()
+            }
+        }
+
+        // Remaining bytes
+        if (hex.isNotEmpty()) {
+            sb.append(hex.toString().padEnd(48))
+            sb.append(" | ")
+            sb.append(ascii)
+            sb.append("\n")
+        }
+
+        if (length > 256) {
+            sb.append("... (${length - 256} more bytes)\n")
+        }
+
+        d(sb.toString())
+    }
+
+    /**
+     * Get current log file path
+     */
+    fun getLogPath(): String? = logFile?.absolutePath
+
+    /**
+     * Get current event count
+     */
+    fun getEventCount(): Long = eventCounter.get()
+}
