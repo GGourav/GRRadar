@@ -24,9 +24,6 @@ import com.grradar.model.RadarEntity
 import com.grradar.vpn.AlbionVpnService
 import java.util.concurrent.CopyOnWriteArrayList
 
-/**
- * Radar Overlay Service - Displays the radar as a floating overlay
- */
 class RadarOverlayService : Service() {
 
     companion object {
@@ -149,12 +146,10 @@ class RadarOverlayService : Service() {
                 y = 100
             }
 
-            // Create container with background
             radarContainer = FrameLayout(this).apply {
                 setBackgroundColor(android.graphics.Color.TRANSPARENT)
             }
 
-            // Create radar view
             radarView = RadarSurfaceView(this).apply {
                 layoutParams = FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
@@ -163,7 +158,6 @@ class RadarOverlayService : Service() {
             }
             radarContainer?.addView(radarView)
 
-            // Touch listener for dragging
             var lastX = 0
             var lastY = 0
 
@@ -193,10 +187,8 @@ class RadarOverlayService : Service() {
                 }
             }
 
-            // Add to window
             windowManager?.addView(radarContainer, params)
 
-            // Start update loop
             startUpdateLoop()
 
             Log.i(TAG, "Overlay created successfully - size=${radarSize}x${radarSize}")
@@ -209,7 +201,6 @@ class RadarOverlayService : Service() {
     private fun startUpdateLoop() {
         updateRunnable = object : Runnable {
             override fun run() {
-                // Get EntityStore from VPN
                 if (entityStore == null) {
                     entityStore = AlbionVpnService.getSharedEntityStore()
                     if (entityStore != null) {
@@ -218,10 +209,8 @@ class RadarOverlayService : Service() {
                     }
                 }
 
-                // Refresh radar
                 radarView?.refresh()
 
-                // Schedule next update
                 handler.postDelayed(this, UPDATE_INTERVAL_MS)
             }
         }
@@ -250,7 +239,6 @@ class RadarOverlayService : Service() {
     private fun removeOverlay() {
         Log.i(TAG, "Removing overlay...")
 
-        // Stop update loop
         updateRunnable?.let { handler.removeCallbacks(it) }
         updateRunnable = null
 
