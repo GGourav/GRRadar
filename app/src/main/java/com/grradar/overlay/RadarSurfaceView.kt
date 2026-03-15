@@ -1,280 +1,249 @@
 package com.grradar.overlay
 
 import android.content.Context
-import android.graphics.*
-import android.util.Log
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
 import android.view.View
-import com.grradar.entity.RadarEntity
-import com.grradar.entity.EntityType
+import com.grradar.data.EntityStore
+import com.grradar.model.*
 import com.grradar.vpn.AlbionVpnService
-import com.grradar.parser.EventDispatcher
-import com.grradar.discovery.DiscoveryLogger
 
-/**
- * Custom View for rendering the radar overlay.
- * Displays entities relative to player position.
- */
 class RadarSurfaceView(context: Context) : View(context) {
-    
+
     companion object {
         private const val TAG = "RadarSurfaceView"
-        
-        // Radar configuration
-        const val RADAR_RADIUS = 200f // Visual radius in pixels
-        const val SCALE = 2f // World units per pixel
-        
-        // Colors
-        private val BG_COLOR = Color.parseColor("#CC000000") // Semi-transparent black
-        private val GRID_COLOR = Color.parseColor("#333333")
-        private val PLAYER_COLOR = Color.GREEN
-        private val TEXT_COLOR = Color.WHITE
-        private val BORDER_COLOR = Color.parseColor("#444444")
+        private const val DEFAULT_SCALE = 2.0f
+        private const val DEFAULT_RANGE = 200.0f
     }
-    
-    // Entity data
-    private var entities: List<RadarEntity> = emptyList()
-    private var playerX: Float = 0f
-    private var playerY: Float = 0f
-    
-    // Paint objects
-    private val bgPaint = Paint().apply {
-        color = BG_COLOR
+
+    private var entityStore: EntityStore? = null
+
+    private var scale = DEFAULT_SCALE
+    private var showCircle = true
+    private var showBorder = true
+    private var selfDotSize = 8f
+    private var entityDotSize = 6f
+    private var borderThickness = 2f
+
+    private val backgroundPaint = Paint().apply {
+        color = Color.parseColor("#E6000000")
         style = Paint.Style.FILL
         isAntiAlias = true
     }
-    
-    private val gridPaint = Paint().apply {
-        color = GRID_COLOR
-        style = Paint.Style.STROKE
-        strokeWidth = 1f
-        isAntiAlias = true
-    }
-    
-    private val entityPaint = Paint().apply {
-        style = Paint.Style.FILL
-        isAntiAlias = true
-    }
-    
-    private val textPaint = Paint().apply {
-        color = TEXT_COLOR
-        textSize = 24f
-        isAntiAlias = true
-        typeface = Typeface.MONOSPACE
-    }
-    
-    private val smallTextPaint = Paint().apply {
-        color = TEXT_COLOR
-        textSize = 18f
-        isAntiAlias = true
-        typeface = Typeface.MONOSPACE
-    }
-    
+
     private val borderPaint = Paint().apply {
-        color = BORDER_COLOR
+        color = Color.parseColor("#80FFFFFF")
         style = Paint.Style.STROKE
-        strokeWidth = 2f
+        strokeWidth = borderThickness
         isAntiAlias = true
     }
-    
-    private val playerPaint = Paint().apply {
-        color = PLAYER_COLOR
+
+    private val selfPaint = Paint().apply {
+        color = Color.CYAN
         style = Paint.Style.FILL
         isAntiAlias = true
     }
-    
-    // View dimensions
-    private var viewWidth = 0
-    private var viewHeight = 0
-    private var centerX = 0f
-    private var centerY = 0f
-    
-    // Debug info
-    private var vpnActive = false
-    private var packetCount = 0L
-    private var packetCountAfter = 0L
-    
-    /**
-     * Update entities to display.
-     */
-    fun updateEntities(newEntities: List<RadarEntity>, pX: Float, pY: Float) {
-        entities = newEntities
-        playerX = pX
-        playerY = pY
-        invalidate()
+
+    private val textPaint = Paint().apply {
+        color = Color.WHITE
+        textSize = 11f
+        isAntiAlias = true
+        setShadowLayer(2f, 1f, 1f, Color.BLACK)
     }
-    
-    /**
-     * Update VPN statistics.
-     */
-    fun updateVpnStats(active: Boolean, pCount: Long, pCountAfter: Long) {
-        vpnActive = active
-        packetCount = pCount
-        packetCountAfter = pCountAfter
-        invalidate()
+
+    private val textPaintSmall = Paint().apply {
+        color = Color.parseColor("#CCCCCC")
+        textSize = 9f
+        isAntiAlias = true
     }
-    
-    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        super.onSizeChanged(w, h, oldw, oldh)
-        viewWidth = w
-        viewHeight = h
-        centerX = w / 2f
-        centerY = h / 2f
+
+    private val textPaintGreen = Paint().apply {
+        color = Color.parseColor("#00FF00")
+        textSize = 10f
+        isAntiAlias = true
     }
-    
+
+    private val textPaintYellow = Paint().apply {
+        color = Color.parseColor("#FFFF00")
+        textSize = 10f
+        isAntiAlias = true
+    }
+
+    private val textPaintRed = Paint().apply {
+        color = Color.parseColor("#FF6666")
+        textSize = 10f
+        isAntiAlias = true
+    }
+
+    private val entityPaints = mutableMapOf<EntityType, Paint>()
+
+    init {
+        initPaints()
+    }
+
+    private fun initPaints() {
+        EntityType.entries.forEach { type ->
+            entityPaints[type] = Paint().apply {
+                try {
+                    color = Color.parseColor(type.colorHex)
+                } catch (e: Exception) {
+                    color = Color.GRAY
+                }
+                style = Paint.Style.FILL
+                isAntiAlias = true
+            }
+        }
+    }
+
+    fun setEntityStore(store: EntityStore) {
+        entityStore = store
+    }
+
+    fun setScale(newScale: Float) {
+        scale = newScale
+    }
+
+    fun setDisplayOptions(circle: Boolean, border: Boolean) {
+        showCircle = circle
+        showBorder = border
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         
-        // Draw background
-        canvas.drawRect(0f, 0f, viewWidth.toFloat(), viewHeight.toFloat(), bgPaint)
+        val width = width.toFloat()
+        val height = height.toFloat()
         
-        // Draw radar circle
-        canvas.drawCircle(centerX, centerY, RADAR_RADIUS, borderPaint)
+        if (width <= 0 || height <= 0) return
         
-        // Draw grid lines
-        drawGrid(canvas)
-        
-        // Draw entities
-        drawEntities(canvas)
-        
-        // Draw player at center
-        drawPlayer(canvas)
-        
-        // Draw debug info
-        drawDebugInfo(canvas)
-    }
-    
-    /**
-     * Draw grid lines.
-     */
-    private fun drawGrid(canvas: Canvas) {
-        // Crosshairs
-        canvas.drawLine(centerX - RADAR_RADIUS, centerY, centerX + RADAR_RADIUS, centerY, gridPaint)
-        canvas.drawLine(centerX, centerY - RADAR_RADIUS, centerX, centerY + RADAR_RADIUS, gridPaint)
-        
-        // Range circles
-        val ranges = floatArrayOf(0.25f, 0.5f, 0.75f)
-        for (range in ranges) {
-            canvas.drawCircle(centerX, centerY, RADAR_RADIUS * range, gridPaint)
+        val centerX = width / 2
+        val centerY = height / 2
+        val radius = (Math.min(width, height) / 2) - borderThickness
+
+        if (showCircle) {
+            canvas.drawCircle(centerX, centerY, radius, backgroundPaint)
+        } else {
+            canvas.drawRect(0f, 0f, width, height, backgroundPaint)
         }
-    }
-    
-    /**
-     * Draw entities on radar.
-     */
-    private fun drawEntities(canvas: Canvas) {
-        for (entity in entities) {
-            // Calculate relative position
-            val relX = (entity.posX - playerX) / SCALE
-            val relY = (entity.posY - playerY) / SCALE
-            
-            // Check if within radar range
-            val distance = kotlin.math.sqrt(relX * relX + relY * relY)
-            if (distance > RADAR_RADIUS) continue
-            
-            // Convert to screen coordinates (Y is inverted in game coords)
-            val screenX = centerX + relX
-            val screenY = centerY - relY
-            
-            // Draw entity marker
-            entityPaint.color = entity.getColor()
-            
-            // Size based on entity type
-            val size = when (entity.entityType) {
-                EntityType.PLAYER -> 8f
-                EntityType.BOSS -> 10f
-                EntityType.MOB -> 6f
-                EntityType.RESOURCE -> 5f
-                EntityType.CHEST -> 7f
-                EntityType.GATE -> 7f
-                EntityType.DUNGEON -> 7f
-                EntityType.CAMP -> 6f
-                EntityType.UNKNOWN -> 4f
-            }
-            
-            canvas.drawCircle(screenX, screenY, size, entityPaint)
-            
-            // Draw tier indicator for resources
-            if (entity.entityType == EntityType.RESOURCE && entity.tier > 0) {
-                canvas.drawText("T${entity.tier}", screenX + 8f, screenY + 4f, smallTextPaint)
+
+        if (showBorder) {
+            if (showCircle) {
+                canvas.drawCircle(centerX, centerY, radius, borderPaint)
+            } else {
+                canvas.drawRect(
+                    borderThickness / 2,
+                    borderThickness / 2,
+                    width - borderThickness / 2,
+                    height - borderThickness / 2,
+                    borderPaint
+                )
             }
         }
-    }
-    
-    /**
-     * Draw player marker at center.
-     */
-    private fun drawPlayer(canvas: Canvas) {
-        // Draw player as triangle pointing up
-        val path = Path().apply {
-            moveTo(centerX, centerY - 10f)
-            lineTo(centerX - 7f, centerY + 7f)
-            lineTo(centerX + 7f, centerY + 7f)
-            close()
+
+        drawStatsHeader(canvas, width)
+
+        val store = entityStore
+        if (store == null) {
+            canvas.drawText("No EntityStore", centerX - 45, centerY, textPaintRed)
+            canvas.drawCircle(centerX, centerY, selfDotSize, selfPaint)
+            return
         }
-        canvas.drawPath(path, playerPaint)
-    }
-    
-    /**
-     * Draw debug information.
-     */
-    private fun drawDebugInfo(canvas: Canvas) {
-        var y = 30f
-        val lineHeight = 22f
-        
-        // Title
-        canvas.drawText("GRRadar Debug", 10f, y, textPaint)
-        y += lineHeight + 5f
-        
-        // VPN Status
-        val vpnStatus = if (vpnActive) "ACTIVE" else "INACTIVE"
-        val vpnColor = if (vpnActive) Color.GREEN else Color.RED
-        smallTextPaint.color = vpnColor
-        canvas.drawText("VPN: $vpnStatus", 10f, y, smallTextPaint)
-        y += lineHeight
-        
-        // Packet counts
-        smallTextPaint.color = TEXT_COLOR
-        canvas.drawText("PC: $packetCount | PCA: $packetCountAfter", 10f, y, smallTextPaint)
-        y += lineHeight
-        
-        // Entity count
-        val entityCount = entities.size
-        val entityColor = when {
-            entityCount > 0 -> Color.GREEN
-            else -> Color.YELLOW
-        }
-        smallTextPaint.color = entityColor
-        canvas.drawText("Entities: $entityCount", 10f, y, smallTextPaint)
-        y += lineHeight
-        
-        // Player position
-        smallTextPaint.color = TEXT_COLOR
-        canvas.drawText(String.format("Pos: (%.1f, %.1f)", playerX, playerY), 10f, y, smallTextPaint)
-        y += lineHeight
-        
-        // Entity breakdown
-        val entityGroups = entities.groupBy { it.entityType }
-        for ((type, list) in entityGroups) {
-            smallTextPaint.color = when (type) {
-                EntityType.RESOURCE -> Color.parseColor("#00FF00")
-                EntityType.MOB -> Color.RED
-                EntityType.PLAYER -> Color.GREEN
-                EntityType.CHEST -> Color.MAGENTA
-                EntityType.BOSS -> Color.parseColor("#FF00FF")
-                else -> Color.GRAY
+
+        val (localX, localY) = store.getLocalPlayerPosition()
+        val localPlayerId = store.getLocalPlayerId()
+
+        val entities = store.getAllEntities()
+        val rangePixels = radius
+
+        entities.forEach { entity ->
+            val dx = (entity.worldX - localX) * scale
+            val dy = (entity.worldY - localY) * scale
+
+            val screenX = centerX + dx
+            val screenY = centerY - dy
+
+            val distanceFromCenter = Math.sqrt(
+                ((screenX - centerX) * (screenX - centerX) + 
+                 (screenY - centerY) * (screenY - centerY)).toDouble()
+            )
+            
+            if (distanceFromCenter <= rangePixels) {
+                drawEntity(canvas, entity, screenX, screenY)
             }
-            canvas.drawText("${type.displayName}: ${list.size}", 10f, y, smallTextPaint)
-            y += lineHeight
         }
+
+        canvas.drawCircle(centerX, centerY, selfDotSize, selfPaint)
         
-        // EventDispatcher stats
-        smallTextPaint.color = Color.CYAN
-        canvas.drawText(EventDispatcher.getStats(), 10f, y, smallTextPaint)
+        if (localPlayerId != null) {
+            canvas.drawText("ID: $localPlayerId", centerX - 25, centerY + selfDotSize + 12, textPaintSmall)
+        }
     }
-    
-    /**
-     * Force refresh the view.
-     */
+
+    private fun drawStatsHeader(canvas: Canvas, width: Float) {
+        val y = 14f
+        
+        canvas.drawText("PKG: com.albiononline", 4f, y, textPaintGreen)
+        
+        val pktCount = AlbionVpnService.packetCount.get()
+        val albCount = AlbionVpnService.albionCount.get()
+        val entCount = entityStore?.getEntityCount() ?: AlbionVpnService.entityCount
+        val vpnRunning = AlbionVpnService.isRunning()
+        
+        val statusText = if (vpnRunning) "VPN: ON" else "VPN: OFF"
+        val statusPaint = if (vpnRunning) textPaintGreen else textPaintRed
+        canvas.drawText(statusText, 4f, y + 12, statusPaint)
+        
+        canvas.drawText("PKT: $pktCount", 4f, y + 24, textPaintYellow)
+        canvas.drawText("ALB: $albCount", 70f, y + 24, textPaintYellow)
+        
+        val entityPaint = if (entCount > 0) textPaintGreen else textPaintRed
+        canvas.drawText("ENT: $entCount", 4f, y + 36, entityPaint)
+        
+        val localId = entityStore?.getLocalPlayerId()
+        val idText = if (localId != null) "LID: $localId" else "LID: --"
+        canvas.drawText(idText, 70f, y + 36, textPaint)
+        
+        val (lx, ly) = entityStore?.getLocalPlayerPosition() ?: Pair(0f, 0f)
+        canvas.drawText("POS: ${lx.toInt()},${ly.toInt()}", 4f, y + 48, textPaintSmall)
+    }
+
+    private fun drawEntity(canvas: Canvas, entity: RadarEntity, x: Float, y: Float) {
+        val paint = entityPaints[entity.type] ?: return
+
+        val size: Float = when {
+            entity.isBoss -> entityDotSize * 2f
+            entity.isElite -> entityDotSize * 1.5f
+            entity.isResource() -> entityDotSize * 0.8f
+            else -> entityDotSize
+        }
+
+        canvas.drawCircle(x, y, size, paint)
+
+        if (entity.isResource() && entity.enchantment.level > 0) {
+            val ringColor = entity.enchantment.ringColorHex
+            if (ringColor != null) {
+                val ringPaint = Paint().apply {
+                    color = try {
+                        Color.parseColor(ringColor)
+                    } catch (e: Exception) {
+                        Color.WHITE
+                    }
+                    style = Paint.Style.STROKE
+                    strokeWidth = 2f
+                    isAntiAlias = true
+                }
+                canvas.drawCircle(x, y, size + 3f, ringPaint)
+            }
+        }
+
+        if (entity.type == EntityType.PLAYER || entity.type == EntityType.HOSTILE_PLAYER) {
+            if (entity.name.isNotEmpty()) {
+                canvas.drawText(entity.name, x + size + 2f, y + 4f, textPaint)
+            }
+        }
+    }
+
     fun refresh() {
         invalidate()
     }
