@@ -1,450 +1,260 @@
-package com.grradar.logger
+package com.grradar.discovery
 
 import android.content.Context
 import android.util.Log
-import com.google.gson.Gson
-import com.google.gson.GsonBuilder
-import kotlinx.coroutines.*
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.channels.trySendBlocking
 import java.io.File
 import java.io.FileWriter
 import java.io.PrintWriter
 import java.text.SimpleDateFormat
 import java.util.*
-import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
- * Discovery Logger - Async param logger for debugging
- * 
- * Logs all Photon event params to a file for reverse engineering.
- * Use this when id_map.json keys are unknown or have shifted.
- * 
- * Log file location: /sdcard/Android/data/com.grradar/files/discovery_log.txt
- *                     OR context.getExternalFilesDir(null)/discovery_log.txt
- * 
- * Provides BOTH:
- * - Static methods (start/stop/i/w/e/d/v) for VPN service compatibility
- * - Instance methods (logEvent, logPacket, logNote) for detailed logging
+ * Logger for discovery and debugging purposes.
+ * Writes to both logcat and a file for analysis.
  */
-class DiscoveryLogger private constructor() {
+object DiscoveryLogger {
     
-    companion object {
-        private const val TAG = "DiscoveryLogger"
-        private const val MAX_LOG_SIZE = 10 * 1024 * 1024L // 10MB
-        private const val FLUSH_INTERVAL = 1000L // 1 second
-        
-        @Volatile
-        private var instance: DiscoveryLogger? = null
-        
-        // Static instance access for VPN service
-        private fun getInstance(): DiscoveryLogger {
-            return instance ?: synchronized(this) {
-                instance ?: DiscoveryLogger().also { instance = it }
-            }
-        }
-        
-        // ═══════════════════════════════════════════════════════════════════
-        // STATIC API - Used by AlbionVpnService
-        // ═══════════════════════════════════════════════════════════════════
-        
-        /**
-         * Start the logger with context
-         */
-        fun start(context: Context): Boolean {
-            return getInstance().initialize(context)
-        }
-        
-        /**
-         * Stop the logger
-         */
-        fun stop() {
-            getInstance().shutdown()
-        }
-        
-        /**
-         * Log info message
-         */
-        fun i(message: String) {
-            Log.i(TAG, message)
-            getInstance().logSimple("INFO", message)
-        }
-        
-        /**
-         * Log warning message
-         */
-        fun w(message: String) {
-            Log.w(TAG, message)
-            getInstance().logSimple("WARN", message)
-        }
-        
-        /**
-         * Log error message
-         */
-        fun e(message: String, throwable: Throwable? = null) {
-            Log.e(TAG, message, throwable)
-            val fullMsg = if (throwable != null) {
-                "$message\n${throwable.stackTraceToString()}"
-            } else {
-                message
-            }
-            getInstance().logSimple("ERROR", fullMsg)
-        }
-        
-        /**
-         * Log debug message
-         */
-        fun d(message: String) {
-            Log.d(TAG, message)
-            getInstance().logSimple("DEBUG", message)
-        }
-        
-        /**
-         * Log verbose message
-         */
-        fun v(message: String) {
-            Log.v(TAG, message)
-            getInstance().logSimple("VERBOSE", message)
-        }
-        
-        // ═══════════════════════════════════════════════════════════════════
-        // INSTANCE API - Used for detailed event logging
-        // ═══════════════════════════════════════════════════════════════════
-        
-        /**
-         * Log an event with its parameters (detailed)
-         */
-        fun logEvent(eventName: String, params: Map<Int, Any?>) {
-            getInstance().logEventDetailed(eventName, params)
-        }
-        
-        /**
-         * Log a raw packet (for debugging)
-         */
-        fun logPacket(packetHex: String, description: String = "") {
-            getInstance().logPacketDetailed(packetHex, description)
-        }
-        
-        /**
-         * Log a discovery note
-         */
-        fun logNote(note: String) {
-            getInstance().logNoteDetailed(note)
-        }
-        
-        /**
-         * Get log file path
-         */
-        fun getLogFilePath(): String? = getInstance().logFile?.absolutePath
-        
-        /**
-         * Get event count
-         */
-        fun getEventCount(): Long = getInstance().eventCounter.get()
-        
-        /**
-         * Clear log file
-         */
-        fun clearLog() {
-            getInstance().clearLogFile()
-        }
-    }
+    private const val TAG = "DiscoveryLogger"
+    private const val LOG_FILE_NAME = "discovery_log.txt"
     
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val logChannel = Channel<LogEntry>(capacity = Channel.UNLIMITED)
-    internal var logFile: File? = null
+    private var logFile: File? = null
     private var writer: PrintWriter? = null
-    private val gson: Gson = GsonBuilder().setPrettyPrinting().create()
-    internal val eventCounter = AtomicLong(0)
-    private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
-    
-    @Volatile
-    private var isRunning = false
+    private val dateFormat = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
+    private val logQueue = ConcurrentLinkedQueue<String>()
+    private var initialized = false
+    private var loggingEnabled = true
+    private var maxFileSize = 5 * 1024 * 1024L // 5MB
     
     /**
-     * Initialize the logger
+     * Initialize the logger with application context.
      */
-    fun initialize(context: Context): Boolean {
-        return try {
-            val filesDir = context.getExternalFilesDir(null) 
-                ?: File(context.filesDir, "logs")
-            
-            if (!filesDir.exists()) {
-                filesDir.mkdirs()
+    @Synchronized
+    fun init(context: Context) {
+        if (initialized) return
+        
+        try {
+            val logDir = File(context.getExternalFilesDir(null), "logs")
+            if (!logDir.exists()) {
+                logDir.mkdirs()
             }
             
-            logFile = File(filesDir, "discovery_log.txt")
+            logFile = File(logDir, LOG_FILE_NAME)
             
-            // Rotate if too large
-            rotateIfNeeded()
+            // Check file size and rotate if needed
+            if (logFile!!.exists() && logFile!!.length() > maxFileSize) {
+                rotateLog()
+            }
             
-            // Start writer coroutine
-            startWriter()
+            writer = PrintWriter(FileWriter(logFile, true), true)
+            initialized = true
             
-            Log.i(TAG, "Logger initialized: ${logFile?.absolutePath}")
-            true
+            Log.i(TAG, "DiscoveryLogger initialized: ${logFile!!.absolutePath}")
+            log("LOGGER", "=== Discovery Logger Initialized ===")
+            log("LOGGER", "Log file: ${logFile!!.absolutePath}")
+            
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to initialize logger: ${e.message}")
-            false
+            Log.e(TAG, "Failed to initialize DiscoveryLogger", e)
+            initialized = false
         }
     }
     
     /**
-     * Start the async writer coroutine
+     * Log a message with a category/tag.
      */
-    private fun startWriter() {
-        if (isRunning) return
+    fun log(category: String, message: String) {
+        if (!loggingEnabled) return
         
-        isRunning = true
+        val timestamp = dateFormat.format(Date())
+        val logLine = "[$timestamp] [$category] $message"
         
-        scope.launch {
-            var lastFlush = System.currentTimeMillis()
+        // Always log to logcat
+        Log.d("GRRadar_$category", message)
+        
+        // Queue for file writing
+        logQueue.offer(logLine)
+        
+        // Write to file
+        writeToFile(logLine)
+    }
+    
+    /**
+     * Log a hex dump of a byte array.
+     */
+    fun logHexDump(category: String, prefix: String, data: ByteArray, length: Int = data.size) {
+        if (!loggingEnabled) return
+        
+        log(category, "$prefix (${minOf(length, data.size)} bytes)")
+        
+        val hex = StringBuilder()
+        val ascii = StringBuilder()
+        var offset = 0
+        
+        for (i in 0 until minOf(length, data.size)) {
+            val b = data[i].toInt() and 0xFF
+            hex.append(String.format("%02X ", b))
+            ascii.append(if (b in 32..126) b.toChar() else '.')
             
-            while (isRunning) {
-                try {
-                    // Use select for timeout-based flush
-                    val entry = withTimeoutOrNull(FLUSH_INTERVAL) {
-                        logChannel.receive()
-                    }
-                    
-                    if (entry != null) {
-                        writeEntry(entry)
-                    }
-                    
-                    // Periodic flush
-                    if (System.currentTimeMillis() - lastFlush > FLUSH_INTERVAL) {
-                        writer?.flush()
-                        lastFlush = System.currentTimeMillis()
-                    }
-                } catch (e: Exception) {
-                    if (e !is TimeoutCancellationException) {
-                        Log.w(TAG, "Writer error: ${e.message}")
-                    }
-                }
+            if ((i + 1) % 16 == 0) {
+                log(category, String.format("%04X: %-48s |%s|", offset, hex.toString(), ascii.toString()))
+                hex.clear()
+                ascii.clear()
+                offset += 16
             }
-            
-            // Final flush on shutdown
+        }
+        
+        // Remaining bytes
+        if (hex.isNotEmpty()) {
+            log(category, String.format("%04X: %-48s |%s|", offset, hex.toString(), ascii.toString()))
+        }
+    }
+    
+    /**
+     * Log packet information.
+     */
+    fun logPacket(direction: String, protocol: String, length: Int, data: ByteArray? = null) {
+        log("PACKET", "$direction $protocol length=$length")
+        if (data != null && data.isNotEmpty()) {
+            logHexDump("PACKET", "Data:", data, minOf(64, data.size))
+        }
+    }
+    
+    /**
+     * Log an error with stack trace.
+     */
+    fun logError(category: String, message: String, error: Throwable? = null) {
+        log("ERROR", "[$category] $message")
+        if (error != null) {
+            log("ERROR", "Exception: ${error.javaClass.simpleName}: ${error.message}")
+            error.stackTrace.take(5).forEach { frame ->
+                log("ERROR", "  at $frame")
+            }
+        }
+    }
+    
+    /**
+     * Log entity detection.
+     */
+    fun logEntity(action: String, objectId: Int, typeName: String?, x: Float, y: Float) {
+        log("ENTITY", "$action: id=$objectId type='$typeName' pos=($x, $y)")
+    }
+    
+    /**
+     * Log parsing event.
+     */
+    fun logParse(stage: String, details: String) {
+        log("PARSE", "[$stage] $details")
+    }
+    
+    /**
+     * Write directly to file.
+     */
+    private fun writeToFile(line: String) {
+        try {
+            writer?.println(line)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to write to log file", e)
+        }
+    }
+    
+    /**
+     * Rotate log file.
+     */
+    private fun rotateLog() {
+        try {
+            val backupFile = File(logFile!!.parent, "${LOG_FILE_NAME}.old")
+            if (backupFile.exists()) {
+                backupFile.delete()
+            }
+            logFile!!.renameTo(backupFile)
+            Log.i(TAG, "Rotated log file")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to rotate log", e)
+        }
+    }
+    
+    /**
+     * Flush pending logs.
+     */
+    fun flush() {
+        try {
+            writer?.flush()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to flush log", e)
+        }
+    }
+    
+    /**
+     * Close the logger.
+     */
+    @Synchronized
+    fun close() {
+        try {
             writer?.flush()
             writer?.close()
-        }
-    }
-    
-    /**
-     * Log simple message (for static API)
-     */
-    internal fun logSimple(level: String, message: String) {
-        if (!isRunning) return
-        
-        val entry = LogEntry(
-            timestamp = System.currentTimeMillis(),
-            eventName = level,
-            description = message,
-            params = emptyMap()
-        )
-        
-        logChannel.trySendBlocking(entry)
-    }
-    
-    /**
-     * Log an event with its parameters (detailed)
-     */
-    internal fun logEventDetailed(eventName: String, params: Map<Int, Any?>) {
-        if (!isRunning) return
-        
-        val entry = LogEntry(
-            timestamp = System.currentTimeMillis(),
-            eventName = eventName,
-            params = params
-        )
-        
-        logChannel.trySendBlocking(entry)
-        eventCounter.incrementAndGet()
-    }
-    
-    /**
-     * Log a raw packet (for debugging)
-     */
-    internal fun logPacketDetailed(packetHex: String, description: String = "") {
-        if (!isRunning) return
-        
-        val entry = LogEntry(
-            timestamp = System.currentTimeMillis(),
-            eventName = "RAW_PACKET",
-            rawHex = packetHex,
-            description = description,
-            params = emptyMap()
-        )
-        
-        logChannel.trySendBlocking(entry)
-    }
-    
-    /**
-     * Log a discovery note
-     */
-    internal fun logNoteDetailed(note: String) {
-        if (!isRunning) return
-        
-        val entry = LogEntry(
-            timestamp = System.currentTimeMillis(),
-            eventName = "NOTE",
-            description = note,
-            params = emptyMap()
-        )
-        
-        logChannel.trySendBlocking(entry)
-    }
-    
-    /**
-     * Write an entry to the log file
-     */
-    private fun writeEntry(entry: LogEntry) {
-        try {
-            if (writer == null && logFile != null) {
-                writer = PrintWriter(FileWriter(logFile, true))
-            }
-            
-            val timestamp = dateFormat.format(Date(entry.timestamp))
-            
-            writer?.println("═".repeat(60))
-            writer?.println("[$timestamp] Event #${eventCounter.get()}")
-            writer?.println("═".repeat(60))
-            writer?.println("Event: ${entry.eventName}")
-            
-            if (entry.description.isNotEmpty()) {
-                writer?.println("Description: ${entry.description}")
-            }
-            
-            if (entry.rawHex.isNotEmpty()) {
-                writer?.println("Raw Hex: ${entry.rawHex}")
-            }
-            
-            if (entry.params.isNotEmpty()) {
-                writer?.println("Parameters:")
-                writer?.println(formatParams(entry.params))
-            }
-            
-            writer?.println()
-            
+            writer = null
+            initialized = false
+            Log.i(TAG, "DiscoveryLogger closed")
         } catch (e: Exception) {
-            Log.e(TAG, "Write error: ${e.message}")
+            Log.e(TAG, "Failed to close logger", e)
         }
     }
     
     /**
-     * Format parameters for logging
+     * Enable or disable logging.
      */
-    private fun formatParams(params: Map<Int, Any?>): String {
-        val sb = StringBuilder()
-        
-        // Sort by key for easier reading
-        params.toSortedMap().forEach { (key, value) ->
-            sb.append("  Key $key: ")
-            
-            when (value) {
-                null -> sb.append("null")
-                is ByteArray -> sb.append("ByteArray[${value.size}] = ${value.copyOfRange(0, minOf(16, value.size)).joinToString("") { "%02X".format(it) }}...")
-                is IntArray -> sb.append("IntArray[${value.size}] = ${value.take(16).toList()}")
-                is FloatArray -> sb.append("FloatArray[${value.size}] = ${value.take(16).toList()}")
-                is Array<*> -> {
-                    sb.append("Array[${value.size}]:\n")
-                    value.take(5).forEachIndexed { i, item ->
-                        sb.append("    [$i] ${formatValue(item)}\n")
-                    }
-                    if (value.size > 5) {
-                        sb.append("    ... and ${value.size - 5} more\n")
-                    }
-                }
-                is Map<*, *> -> {
-                    sb.append("Map[${value.size}]:\n")
-                    value.entries.take(5).forEach { (k, v) ->
-                        sb.append("    $k -> ${formatValue(v)}\n")
-                    }
-                    if (value.size > 5) {
-                        sb.append("    ... and ${value.size - 5} more\n")
-                    }
-                }
-                is List<*> -> {
-                    sb.append("List[${value.size}]:\n")
-                    value.take(5).forEachIndexed { i, item ->
-                        sb.append("    [$i] ${formatValue(item)}\n")
-                    }
-                    if (value.size > 5) {
-                        sb.append("    ... and ${value.size - 5} more\n")
-                    }
-                }
-                else -> sb.append(formatValue(value))
+    fun setEnabled(enabled: Boolean) {
+        loggingEnabled = enabled
+        if (enabled) {
+            log("LOGGER", "Logging enabled")
+        }
+    }
+    
+    /**
+     * Get log file path.
+     */
+    fun getLogFilePath(): String? {
+        return logFile?.absolutePath
+    }
+    
+    /**
+     * Get recent log entries.
+     */
+    fun getRecentLogs(count: Int = 100): List<String> {
+        val result = mutableListOf<String>()
+        try {
+            logFile?.readLines()?.takeLast(count)?.let {
+                result.addAll(it)
             }
-            
-            sb.append("\n")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to read log file", e)
         }
-        
-        return sb.toString()
+        return result
     }
     
     /**
-     * Format a single value
+     * Clear log file.
      */
-    private fun formatValue(value: Any?): String {
-        return when (value) {
-            null -> "null"
-            is String -> "\"$value\""
-            is Float -> String.format("%.2f", value)
-            is Double -> String.format("%.4f", value)
-            is ByteArray -> "ByteArray[${value.size}]"
-            else -> value.toString()
-        }
-    }
-    
-    /**
-     * Rotate log file if too large
-     */
-    private fun rotateIfNeeded() {
-        val file = logFile ?: return
-        
-        if (file.exists() && file.length() > MAX_LOG_SIZE) {
-            val rotated = File(file.parent, "discovery_log_old.txt")
-            if (rotated.exists()) {
-                rotated.delete()
-            }
-            file.renameTo(rotated)
-            Log.i(TAG, "Rotated log file")
-        }
-    }
-    
-    /**
-     * Shutdown the logger
-     */
-    internal fun shutdown() {
-        isRunning = false
-        scope.cancel()
-        writer?.flush()
-        writer?.close()
-        writer = null
-    }
-    
-    /**
-     * Clear log file
-     */
-    internal fun clearLogFile() {
+    fun clear() {
         try {
             writer?.close()
             logFile?.delete()
-            writer = if (logFile != null) PrintWriter(FileWriter(logFile, false)) else null
-            eventCounter.set(0)
-            Log.i(TAG, "Log cleared")
+            writer = PrintWriter(FileWriter(logFile, true), true)
+            log("LOGGER", "Log cleared")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to clear log: ${e.message}")
+            Log.e(TAG, "Failed to clear log", e)
         }
     }
+    
+    /**
+     * Check if logger is initialized.
+     */
+    fun isInitialized(): Boolean = initialized
+    
+    /**
+     * Get log file size in bytes.
+     */
+    fun getLogSize(): Long {
+        return logFile?.length() ?: 0L
+    }
 }
-
-/**
- * Log entry data class
- */
-private data class LogEntry(
-    val timestamp: Long,
-    val eventName: String,
-    val params: Map<Int, Any?>,
-    val rawHex: String = "",
-    val description: String = ""
-)
