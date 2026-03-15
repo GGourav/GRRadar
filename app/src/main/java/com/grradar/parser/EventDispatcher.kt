@@ -1,410 +1,274 @@
 package com.grradar.parser
 
 import android.util.Log
-import com.grradar.entity.RadarEntity
-import com.grradar.entity.EntityType
-import com.grradar.overlay.RadarOverlayManager
-import com.grradar.parser.IdMapRepository
-import com.grradar.discovery.DiscoveryLogger
+import com.grradar.data.EntityStore
+import com.grradar.data.IdMapRepository
+import com.grradar.logger.DiscoveryLogger
+import com.grradar.model.*
 
-/**
- * Dispatches parsed Photon events to the radar overlay.
- * Handles entity spawning, position updates, and removal.
- */
-object EventDispatcher {
-    
-    private const val TAG = "EventDispatcher"
-    
-    // Entity tracking: objectId -> RadarEntity
-    private val entities = mutableMapOf<Int, RadarEntity>()
-    
-    // Player reference (objectId = 0 is typically local player)
-    private var playerX: Float = 0f
-    private var playerY: Float = 0f
-    
-    // Statistics
-    private var totalEventsProcessed = 0
-    private var totalEntitiesCreated = 0
-    private var totalEntitiesUpdated = 0
-    
-    /**
-     * Process a parsed Photon event.
-     * Returns true if the event was handled.
-     */
-    fun dispatchEvent(eventName: String, params: Map<Int, Any>): Boolean {
-        totalEventsProcessed++
-        
-        DiscoveryLogger.log("EVENT", "Dispatching: $eventName with ${params.size} params")
-        Log.d(TAG, "=== DISPATCH EVENT: $eventName ===")
-        Log.d(TAG, "Params: ${params.keys.joinToString()}")
-        
-        // Log all parameter keys and values for debugging
-        params.forEach { (key, value) ->
-            val valueStr = when (value) {
-                is ByteArray -> "ByteArray[${value.size}]"
-                is String -> "\"$value\""
-                else -> value.toString()
-            }
-            DiscoveryLogger.log("PARAM", "  key=$key value=$valueStr")
-            Log.d(TAG, "  param[$key] = $valueStr")
-        }
-        
-        val handled = when (eventName) {
-            // Entity spawn events
-            "spawn", "Spawn", "SPAWN" -> handleSpawn(params)
-            "AddItem", "addItem" -> handleSpawn(params)
-            "NewObject", "newObject" -> handleSpawn(params)
-            
-            // Position update events
-            "move", "Move", "MOVE" -> handleMove(params)
-            "PositionUpdate", "positionUpdate" -> handleMove(params)
-            "SetPosition", "setPosition" -> handleMove(params)
-            
-            // Character events
-            "CharacterInfo", "characterInfo" -> handleCharacterInfo(params)
-            "PlayerJoined", "playerJoined" -> handleSpawn(params)
-            
-            // Resource/harvestable events
-            "HarvestableObject", "harvestable" -> handleSpawn(params)
-            "ResourceSpawn", "resourceSpawn" -> handleSpawn(params)
-            
-            // Mob/monster events  
-            "MobSpawn", "mobSpawn" -> handleSpawn(params)
-            "MonsterSpawn", "monsterSpawn" -> handleSpawn(params)
-            
-            // Remove events
-            "despawn", "Despawn", "DESPAWN" -> handleDespawn(params)
-            "RemoveItem", "removeItem" -> handleDespawn(params)
-            "DeleteObject", "deleteObject" -> handleDespawn(params)
-            
-            // Health/damage events
-            "HealthUpdate", "healthUpdate" -> handleHealthUpdate(params)
-            
-            // Unknown event - try to parse anyway
-            else -> handleUnknownEvent(eventName, params)
-        }
-        
-        if (handled) {
-            DiscoveryLogger.log("EVENT", "✅ Successfully handled: $eventName")
-        } else {
-            DiscoveryLogger.log("EVENT", "⚠️ Could not handle: $eventName")
-        }
-        
-        return handled
+class EventDispatcher(
+    private val entityStore: EntityStore,
+    private val idMapRepo: IdMapRepository
+) {
+    companion object {
+        private const val TAG = "EventDispatcher"
     }
     
-    /**
-     * Handle entity spawn event.
-     */
-    private fun handleSpawn(params: Map<Int, Any>): Boolean {
-        DiscoveryLogger.log("SPAWN", "Processing spawn event")
+    private val parser = PhotonParser(object : PhotonParser.PhotonCallback {
+        override fun onEvent(eventName: String, params: Map<Int, Any?>) {
+            dispatchEvent(eventName, params)
+        }
         
-        // Get object ID (key 0)
-        val objectId = when (val id = params[0]) {
-            is Int -> id
-            is Long -> id.toInt()
-            is Number -> id.toInt()
-            else -> {
-                DiscoveryLogger.log("SPAWN", "No valid objectId in params[0]: $id")
-                Log.w(TAG, "No objectId in spawn event")
-                return false
+        override fun onError(error: String) {
+            Log.e(TAG, "Photon error: $error")
+            DiscoveryLogger.e("Photon error: $error")
+        }
+    })
+    
+    object Events {
+        const val JOIN_FINISHED = "JoinFinished"
+        const val NEW_CHARACTER = "NewCharacter"
+        const val NEW_MOB = "NewMob"
+        const val NEW_SIMPLE_HARVESTABLE_OBJECT = "NewSimpleHarvestableObject"
+        const val NEW_SIMPLE_HARVESTABLE_OBJECT_LIST = "NewSimpleHarvestableObjectList"
+        const val NEW_HARVESTABLE_OBJECT = "NewHarvestableObject"
+        const val NEW_SILVER_OBJECT = "NewSilverObject"
+        const val LEAVE = "Leave"
+        const val MOVE = "Move"
+        const val CHANGE_CLUSTER = "ChangeCluster"
+    }
+    
+    fun parsePayload(payload: ByteArray): Boolean {
+        return parser.parse(payload)
+    }
+    
+    private fun dispatchEvent(eventName: String, params: Map<Int, Any?>) {
+        Log.d(TAG, "Event: $eventName with ${params.size} params")
+        DiscoveryLogger.d("Event received: $eventName (${params.size} params)")
+        
+        DiscoveryLogger.logEvent(eventName, params)
+        
+        when (eventName) {
+            Events.JOIN_FINISHED -> handleJoinFinished(params)
+            Events.NEW_CHARACTER -> handleNewCharacter(params)
+            Events.NEW_MOB -> handleNewMob(params)
+            Events.NEW_SIMPLE_HARVESTABLE_OBJECT -> handleNewHarvestable(params)
+            Events.NEW_SIMPLE_HARVESTABLE_OBJECT_LIST -> handleHarvestableList(params)
+            Events.NEW_HARVESTABLE_OBJECT -> handleNewHarvestable(params)
+            Events.NEW_SILVER_OBJECT -> handleSilver(params)
+            Events.LEAVE -> handleLeave(params)
+            Events.MOVE -> handleMove(params)
+            Events.CHANGE_CLUSTER -> handleChangeCluster(params)
+            else -> Log.v(TAG, "Unhandled event: $eventName")
+        }
+    }
+    
+    private fun handleJoinFinished(params: Map<Int, Any?>) {
+        val keys = idMapRepo.getJoinFinishedKeys()
+        val objectId = parser.getInt(params, keys.localObjectIdKey)
+        var posX = parser.getFloat(params, keys.posXKey)
+        var posY = parser.getFloat(params, keys.posYKey)
+        
+        Log.i(TAG, "JoinFinished: id=$objectId rawPos=($posX,$posY)")
+        DiscoveryLogger.i("JoinFinished: id=$objectId rawPos=($posX,$posY)")
+        
+        if (posX == 0f && posY == 0f) {
+            val planB = idMapRepo.getCoordinatePlanB()
+            val coords = parser.scanForCoordinates(params, planB.minValid.toFloat(), planB.maxValid.toFloat())
+            if (coords != null) {
+                posX = coords.first
+                posY = coords.second
+                Log.i(TAG, "JoinFinished PlanB coords: ($posX,$posY)")
+                DiscoveryLogger.i("JoinFinished PlanB coords: ($posX,$posY)")
             }
         }
         
-        // Get position (keys 8, 9 for x, y)
-        val posX = extractFloat(params[8])
-        val posY = extractFloat(params[9])
+        entityStore.setLocalPlayerId(objectId)
+        entityStore.setLocalPlayerPosition(posX, posY)
+        entityStore.clearAll()
         
-        // Get type information
-        val typeName = extractString(params[1])
-        val typeId = extractInt(params[2])
-        val tier = extractInt(params[7])
-        val enchant = extractInt(params[11])
+        DiscoveryLogger.i("JoinFinished complete: localId=$objectId pos=($posX,$posY)")
+    }
+    
+    private fun handleNewCharacter(params: Map<Int, Any?>) {
+        val commonKeys = idMapRepo.getCommonKeys()
+        val playerKeys = idMapRepo.getPlayerKeys()
         
-        DiscoveryLogger.log("SPAWN", "objectId=$objectId type='$typeName' pos=($posX, $posY) tier=$tier enchant=$enchant")
+        val objectId = parser.getInt(params, commonKeys.objectIdKey)
+        var posX = parser.getFloat(params, commonKeys.posXKey)
+        var posY = parser.getFloat(params, commonKeys.posYKey)
+        val name = parser.getString(params, playerKeys.nameKey)
+        val guild = parser.getString(params, playerKeys.guildKey)
+        val alliance = parser.getString(params, playerKeys.allianceKey)
         
-        // Determine entity type
-        val entityType = determineEntityType(typeName, typeId, params)
+        if (posX == 0f && posY == 0f) {
+            val planB = idMapRepo.getCoordinatePlanB()
+            val coords = parser.scanForCoordinates(params, planB.minValid.toFloat(), planB.maxValid.toFloat())
+            if (coords != null) {
+                posX = coords.first
+                posY = coords.second
+            }
+        }
         
-        // Create entity
+        if (objectId == entityStore.getLocalPlayerId()) {
+            entityStore.setLocalPlayerPosition(posX, posY)
+            Log.d(TAG, "Local player position updated: ($posX,$posY)")
+            return
+        }
+        
         val entity = RadarEntity(
-            objectId = objectId,
-            entityType = entityType,
-            posX = posX,
-            posY = posY,
-            typeName = typeName ?: "unknown",
+            id = objectId,
+            type = EntityType.PLAYER,
+            worldX = posX,
+            worldY = posY,
+            typeName = "PLAYER",
+            name = name,
+            guildName = guild,
+            allianceName = alliance
+        )
+        entityStore.putEntity(entity)
+        
+        Log.d(TAG, "NewPlayer: $name at ($posX,$posY)")
+        DiscoveryLogger.i("NewPlayer: id=$objectId name='$name' at ($posX,$posY)")
+    }
+    
+    private fun handleNewMob(params: Map<Int, Any?>) {
+        val commonKeys = idMapRepo.getCommonKeys()
+        val mobKeys = idMapRepo.getMobKeys()
+        
+        val objectId = parser.getInt(params, commonKeys.objectIdKey)
+        var posX = parser.getFloat(params, commonKeys.posXKey)
+        var posY = parser.getFloat(params, commonKeys.posYKey)
+        var typeName = parser.getString(params, mobKeys.typeNameKey)
+        var tier = parser.getInt(params, mobKeys.tierKey)
+        
+        if (typeName.isEmpty()) {
+            typeName = parser.scanForTierPrefix(params) ?: ""
+        }
+        
+        if (posX == 0f && posY == 0f) {
+            val planB = idMapRepo.getCoordinatePlanB()
+            val coords = parser.scanForCoordinates(params, planB.minValid.toFloat(), planB.maxValid.toFloat())
+            if (coords != null) {
+                posX = coords.first
+                posY = coords.second
+            }
+        }
+        
+        tier = if (tier > 0) tier else idMapRepo.extractTier(typeName)
+        val enchant = idMapRepo.extractEnchantment(typeName)
+        val entityType = idMapRepo.classifyEntity(typeName)
+        
+        val entity = RadarEntity(
+            id = objectId,
+            type = entityType,
+            worldX = posX,
+            worldY = posY,
+            typeName = typeName,
             tier = tier,
             enchantment = enchant
         )
+        entityStore.putEntity(entity)
         
-        // Store entity
-        entities[objectId] = entity
-        totalEntitiesCreated++
-        
-        DiscoveryLogger.log("SPAWN", "✅ Created entity: $entity")
-        
-        // Update overlay
-        updateOverlay()
-        
-        return true
+        Log.d(TAG, "NewMob: $typeName at ($posX,$posY)")
+        DiscoveryLogger.i("NewMob: id=$objectId type='$typeName' at ($posX,$posY)")
     }
     
-    /**
-     * Handle position update event.
-     */
-    private fun handleMove(params: Map<Int, Any>): Boolean {
-        val objectId = extractInt(params[0]) ?: return false
-        val posX = extractFloat(params[8])
-        val posY = extractFloat(params[9])
+    private fun handleNewHarvestable(params: Map<Int, Any?>) {
+        val commonKeys = idMapRepo.getCommonKeys()
+        val harvestKeys = idMapRepo.getHarvestableKeys()
         
-        val entity = entities[objectId]
-        if (entity != null) {
-            entity.posX = posX
-            entity.posY = posY
-            totalEntitiesUpdated++
-            
-            DiscoveryLogger.log("MOVE", "Updated entity $objectId to ($posX, $posY)")
-            
-            // Check if this is player movement
-            if (objectId == 0 || entity.entityType == EntityType.PLAYER) {
-                playerX = posX
-                playerY = posY
-                DiscoveryLogger.log("PLAYER", "Player position: ($playerX, $playerY)")
+        val objectId = parser.getInt(params, commonKeys.objectIdKey)
+        var posX = parser.getFloat(params, commonKeys.posXKey)
+        var posY = parser.getFloat(params, commonKeys.posYKey)
+        var typeName = parser.getString(params, harvestKeys.typeNameKey)
+        var tier = parser.getInt(params, harvestKeys.tierKey)
+        
+        if (typeName.isEmpty()) {
+            typeName = parser.scanForTierPrefix(params) ?: ""
+        }
+        
+        if (posX == 0f && posY == 0f) {
+            val planB = idMapRepo.getCoordinatePlanB()
+            val coords = parser.scanForCoordinates(params, planB.minValid.toFloat(), planB.maxValid.toFloat())
+            if (coords != null) {
+                posX = coords.first
+                posY = coords.second
             }
-            
-            updateOverlay()
-            return true
         }
         
-        // Might be a new entity we haven't seen
-        DiscoveryLogger.log("MOVE", "Move for unknown entity $objectId, treating as spawn")
-        return handleSpawn(params)
+        tier = if (tier > 0) tier else idMapRepo.extractTier(typeName)
+        val enchant = idMapRepo.extractEnchantment(typeName)
+        val entityType = idMapRepo.classifyEntity(typeName)
+        
+        val entity = RadarEntity(
+            id = objectId,
+            type = entityType,
+            worldX = posX,
+            worldY = posY,
+            typeName = typeName,
+            tier = tier,
+            enchantment = enchant
+        )
+        entityStore.putEntity(entity)
+        
+        Log.d(TAG, "NewResource: $typeName at ($posX,$posY)")
+        DiscoveryLogger.i("NewResource: id=$objectId type='$typeName' at ($posX,$posY)")
     }
     
-    /**
-     * Handle character info (usually local player).
-     */
-    private fun handleCharacterInfo(params: Map<Int, Any>): Boolean {
-        DiscoveryLogger.log("CHAR", "CharacterInfo params: ${params.keys.joinToString()}")
-        
-        // Try to get position
-        val posX = extractFloat(params[8])
-        val posY = extractFloat(params[9])
-        
-        if (posX != 0f || posY != 0f) {
-            playerX = posX
-            playerY = posY
-            DiscoveryLogger.log("PLAYER", "Player position from CharacterInfo: ($playerX, $playerY)")
-        }
-        
-        return true
-    }
-    
-    /**
-     * Handle entity despawn event.
-     */
-    private fun handleDespawn(params: Map<Int, Any>): Boolean {
-        val objectId = extractInt(params[0]) ?: return false
-        
-        val removed = entities.remove(objectId)
-        if (removed != null) {
-            DiscoveryLogger.log("DESPAWN", "Removed entity $objectId (${removed.typeName})")
-            updateOverlay()
-            return true
-        }
-        
-        return false
-    }
-    
-    /**
-     * Handle health update event.
-     */
-    private fun handleHealthUpdate(params: Map<Int, Any>): Boolean {
-        val objectId = extractInt(params[0]) ?: return false
-        val health = extractInt(params[1]) ?: return false
-        val maxHealth = extractInt(params[2]) ?: health
-        
-        val entity = entities[objectId]
-        if (entity != null) {
-            entity.health = health
-            entity.maxHealth = maxHealth
-            DiscoveryLogger.log("HEALTH", "Entity $objectId health: $health/$maxHealth")
-            updateOverlay()
-            return true
-        }
-        
-        return false
-    }
-    
-    /**
-     * Handle unknown events by trying to extract useful data.
-     */
-    private fun handleUnknownEvent(eventName: String, params: Map<Int, Any>): Boolean {
-        DiscoveryLogger.log("UNKNOWN", "Attempting to parse unknown event: $eventName")
-        
-        // Check if this looks like an entity event
-        val hasObjectId = params.containsKey(0)
-        val hasPosition = params.containsKey(8) && params.containsKey(9)
-        
-        if (hasObjectId && hasPosition) {
-            DiscoveryLogger.log("UNKNOWN", "Event looks like entity spawn, attempting parse")
-            return handleSpawn(params)
-        }
-        
-        // Check for type name patterns
-        for ((key, value) in params) {
-            if (value is String) {
-                when {
-                    value.contains("T1_") || value.contains("T2_") || 
-                    value.contains("T3_") || value.contains("T4_") ||
-                    value.contains("T5_") || value.contains("T6_") ||
-                    value.contains("T7_") || value.contains("T8_") -> {
-                        DiscoveryLogger.log("UNKNOWN", "Found resource type in param[$key]: $value")
-                        return handleSpawn(params)
-                    }
-                    value.contains("KEEPER") || value.contains("MIST") -> {
-                        DiscoveryLogger.log("UNKNOWN", "Found mob type in param[$key]: $value")
-                        return handleSpawn(params)
-                    }
+    private fun handleHarvestableList(params: Map<Int, Any?>) {
+        val list = parser.getList(params, 2)
+        if (list != null) {
+            DiscoveryLogger.i("HarvestableList: ${list.size} items")
+            list.forEach { item ->
+                if (item is Map<*, *>) {
+                    @Suppress("UNCHECKED_CAST")
+                    handleNewHarvestable(item as Map<Int, Any?>)
                 }
             }
         }
-        
-        return false
     }
     
-    /**
-     * Determine entity type from various parameters.
-     */
-    private fun determineEntityType(typeName: String?, typeId: Int?, params: Map<Int, Any>): EntityType {
-        // Check type name first
-        if (typeName != null) {
-            val upper = typeName.uppercase()
-            when {
-                upper.contains("PLAYER") -> return EntityType.PLAYER
-                upper.contains("MOB") || upper.contains("MONSTER") -> return EntityType.MOB
-                upper.contains("KEEPER") -> return EntityType.MOB
-                upper.contains("MIST") -> return EntityType.MOB
-                upper.contains("RESOURCE") || upper.contains("HARVESTABLE") -> return EntityType.RESOURCE
-                upper.contains("TREE") || upper.contains("ROCK") || upper.contains("ORE") -> return EntityType.RESOURCE
-                upper.contains("FIBER") || upper.contains("HIDE") || upper.contains("FISH") -> return EntityType.RESOURCE
-                upper.contains("T1_") || upper.contains("T2_") || upper.contains("T3_") -> return EntityType.RESOURCE
-                upper.contains("T4_") || upper.contains("T5_") || upper.contains("T6_") -> return EntityType.RESOURCE
-                upper.contains("T7_") || upper.contains("T8_") -> return EntityType.RESOURCE
-                upper.contains("CHEST") || upper.contains("TREASURE") -> return EntityType.CHEST
-                upper.contains("GATE") || upper.contains("PORTAL") -> return EntityType.GATE
-                upper.contains("DUNGEON") -> return EntityType.DUNGEON
-                upper.contains("CAMP") || upper.contains("MOUNTAIN") -> return EntityType.CAMP
-                upper.contains("BOSS") -> return EntityType.BOSS
-                upper.contains("AVALONIAN") -> return EntityType.BOSS
+    private fun handleSilver(params: Map<Int, Any?>) {
+        val objectId = parser.getInt(params, 0)
+        val posX = parser.getFloat(params, 8)
+        val posY = parser.getFloat(params, 9)
+        
+        val entity = RadarEntity(
+            id = objectId,
+            type = EntityType.SILVER,
+            worldX = posX,
+            worldY = posY,
+            typeName = "SILVER"
+        )
+        entityStore.putEntity(entity)
+        
+        DiscoveryLogger.i("NewSilver: id=$objectId at ($posX,$posY)")
+    }
+    
+    private fun handleLeave(params: Map<Int, Any?>) {
+        val objectId = parser.getInt(params, 0)
+        entityStore.removeEntity(objectId)
+        Log.d(TAG, "Entity removed: $objectId")
+    }
+    
+    private fun handleMove(params: Map<Int, Any?>) {
+        val objectId = parser.getInt(params, 0)
+        val posX = parser.getFloat(params, 8)
+        val posY = parser.getFloat(params, 9)
+        
+        if (objectId == entityStore.getLocalPlayerId()) {
+            entityStore.setLocalPlayerPosition(posX, posY)
+        } else {
+            entityStore.getEntity(objectId)?.let {
+                entityStore.putEntity(it.copy(worldX = posX, worldY = posY))
             }
         }
-        
-        // Check type ID from IdMapRepository
-        if (typeId != null) {
-            val mappedType = IdMapRepository.getEntityType(typeId)
-            if (mappedType != EntityType.UNKNOWN) {
-                return mappedType
-            }
-        }
-        
-        // Check params for type hints
-        for ((key, value) in params) {
-            if (value is String) {
-                val upper = value.uppercase()
-                if (upper.contains("T") && upper.contains("_") && 
-                    (upper.contains("ORE") || upper.contains("WOOD") || 
-                     upper.contains("ROCK") || upper.contains("FIBER") || 
-                     upper.contains("HIDE"))) {
-                    return EntityType.RESOURCE
-                }
-            }
-        }
-        
-        return EntityType.UNKNOWN
     }
     
-    // Helper extraction functions
-    private fun extractFloat(value: Any?): Float {
-        return when (value) {
-            is Float -> value
-            is Double -> value.toFloat()
-            is Int -> value.toFloat()
-            is Long -> value.toFloat()
-            is Number -> value.toFloat()
-            else -> 0f
-        }
-    }
-    
-    private fun extractInt(value: Any?): Int? {
-        return when (value) {
-            is Int -> value
-            is Long -> value.toInt()
-            is Number -> value.toInt()
-            else -> null
-        }
-    }
-    
-    private fun extractString(value: Any?): String? {
-        return when (value) {
-            is String -> value
-            is ByteArray -> try { String(value, Charsets.UTF_8) } catch (e: Exception) { null }
-            else -> null
-        }
-    }
-    
-    /**
-     * Update the radar overlay with current entities.
-     */
-    private fun updateOverlay() {
-        val entityList = entities.values.toList()
-        DiscoveryLogger.log("OVERLAY", "Updating overlay with ${entityList.size} entities")
-        RadarOverlayManager.updateEntities(entityList, playerX, playerY)
-    }
-    
-    /**
-     * Get current entity count.
-     */
-    fun getEntityCount(): Int = entities.size
-    
-    /**
-     * Get all entities.
-     */
-    fun getEntities(): List<RadarEntity> = entities.values.toList()
-    
-    /**
-     * Get player position.
-     */
-    fun getPlayerPosition(): Pair<Float, Float> = Pair(playerX, playerY)
-    
-    /**
-     * Get statistics.
-     */
-    fun getStats(): String {
-        return "Events: $totalEventsProcessed, Created: $totalEntitiesCreated, Updated: $totalEntitiesUpdated, Active: ${entities.size}"
-    }
-    
-    /**
-     * Clear all tracked entities.
-     */
-    fun clear() {
-        entities.clear()
-        playerX = 0f
-        playerY = 0f
-        totalEventsProcessed = 0
-        totalEntitiesCreated = 0
-        totalEntitiesUpdated = 0
-        DiscoveryLogger.log("DISPATCHER", "Cleared all entities")
-        updateOverlay()
-    }
-    
-    /**
-     * Process raw photon event data directly.
-     * Called when event name is embedded in params.
-     */
-    fun processRawEvent(params: Map<Int, Any>): Boolean {
-        // Try to extract event name from param 252 (0xFC)
-        val eventName = extractString(params[252]) ?: "unknown"
-        return dispatchEvent(eventName, params)
+    private fun handleChangeCluster(params: Map<Int, Any?>) {
+        Log.i(TAG, "ChangeCluster - clearing all entities")
+        DiscoveryLogger.i("ChangeCluster - zone change, clearing entities")
+        entityStore.clearAll()
     }
 }
