@@ -105,26 +105,13 @@ class IdMapRepository private constructor() {
     fun getVersion(): String = config?.version ?: "unknown"
     fun isInitialized(): Boolean = config != null
     
-    fun extractTier(typeName: String?): Int {
-        if (typeName.isNullOrEmpty()) return 0
-        val match = Regex("T([1-8])_").find(typeName)
-        return match?.groupValues?.get(1)?.toIntOrNull() ?: 0
-    }
-    
-    fun extractEnchantment(typeName: String?): Enchantment {
-        if (typeName.isNullOrEmpty()) return Enchantment.NONE
-        val match = Regex("@([1-4])$").find(typeName)
-        val level = match?.groupValues?.get(1)?.toIntOrNull() ?: 0
-        return Enchantment.fromInt(level)
-    }
-    
     fun classifyEntity(typeName: String?): EntityType {
         if (typeName.isNullOrEmpty()) return EntityType.UNKNOWN
         val upper = typeName.uppercase()
         
         // Resources
         if (upper.contains("FIBER") || upper.contains("COTTON") || upper.contains("HEMP") || 
-            upper.contains("FLAX") || upper.contains("SILK") || upper.contains("SPONGE")) 
+            upper.contains("FLAX") || upper.contains("SILK") || upper.contains("SILKEN")) 
             return EntityType.RESOURCE_FIBER
             
         if (upper.contains("_ORE") || upper.contains("IRONNODE") || upper.contains("STEELNODE") || 
@@ -237,6 +224,19 @@ class IdMapRepository private constructor() {
             return EntityType.SILVER
         
         return EntityType.UNKNOWN
+    }
+    
+    fun extractTier(typeName: String?): Int {
+        if (typeName.isNullOrEmpty()) return 0
+        val match = Regex("T([1-8])_").find(typeName)
+        return match?.groupValues?.get(1)?.toIntOrNull() ?: 0
+    }
+    
+    fun extractEnchantment(typeName: String?): Enchantment {
+        if (typeName.isNullOrEmpty()) return Enchantment.NONE
+        val match = Regex("@([1-4])$").find(typeName)
+        val level = match?.groupValues?.get(1)?.toIntOrNull() ?: 0
+        return Enchantment.fromInt(level)
     }
     
     fun getMobCategory(typeName: String?): MobCategory {
