@@ -84,9 +84,9 @@ class PhotonParser(private val callback: PhotonCallback) {
         val cmdType = buffer.get().toInt() and 0xFF
         val channelId = buffer.get().toInt() and 0xFF
         val cmdFlags = buffer.get().toInt() and 0xFF
-        buffer.get()
+        buffer.get() // reserved
         val cmdLength = buffer.int
-        buffer.int()
+        buffer.int // reliableSeq
         
         val startPos = buffer.position()
         val payloadLength = cmdLength - 12
@@ -137,7 +137,7 @@ class PhotonParser(private val callback: PhotonCallback) {
         val buffer = ByteBuffer.wrap(payload)
         buffer.order(ByteOrder.BIG_ENDIAN)
         
-        buffer.get()
+        buffer.get() // Skip message type (0x04)
         val eventCode = buffer.get().toInt() and 0xFF
         val paramCount = buffer.short.toInt() and 0xFFFF
         
@@ -255,7 +255,7 @@ class PhotonParser(private val callback: PhotonCallback) {
     private fun readArray(buffer: ByteBuffer): Array<Any?> {
         if (buffer.remaining() < 3) return arrayOfNulls(0)
         val length = buffer.short.toInt() and 0xFFFF
-        buffer.get()
+        buffer.get() // elementType
         if (length <= 0) return arrayOfNulls(0)
         return Array(length) { readValue(buffer) }
     }
@@ -271,8 +271,8 @@ class PhotonParser(private val callback: PhotonCallback) {
     
     private fun readDictionary(buffer: ByteBuffer): Map<Any?, Any?> {
         if (buffer.remaining() < 4) return emptyMap()
-        buffer.get()
-        buffer.get()
+        buffer.get() // keyType
+        buffer.get() // valueType
         val count = buffer.short.toInt() and 0xFFFF
         if (count == 0) return emptyMap()
         val map = HashMap<Any?, Any?>(count)
@@ -287,6 +287,7 @@ class PhotonParser(private val callback: PhotonCallback) {
         return Array(length) { readValue(buffer) }
     }
     
+    // Helper methods for EventDispatcher
     fun getInt(params: Map<Int, Any?>, key: Int, default: Int = 0): Int {
         return when (val v = params[key]) {
             is Int -> v
@@ -347,10 +348,7 @@ class PhotonParser(private val callback: PhotonCallback) {
         for (v in params.values) {
             when (v) {
                 is Float -> if (v in minValid..maxValid && v != 0f) floats.add(v)
-                is Double -> { 
-                    val f = v.toFloat()
-                    if (f in minValid..maxValid && f != 0f) floats.add(f) 
-                }
+                is Double -> { val f = v.toFloat(); if (f in minValid..maxValid && f != 0f) floats.add(f) }
             }
         }
         return if (floats.size >= 2) Pair(floats[0], floats[1]) else null
