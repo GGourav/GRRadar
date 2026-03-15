@@ -1,17 +1,12 @@
 package com.grradar.data
 
 import android.content.Context
-import android.content.res.AssetManager
+import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.annotations.SerializedName
 import com.grradar.model.*
-import java.io.BufferedReader
-import java.io.InputStreamReader
 
-/**
- * Param key mappings loaded from id_map.json
- */
-data class ParamKeys(
+data class CommonKeys(
     @SerializedName("objectIdKey") val objectIdKey: Int = 0,
     @SerializedName("posXKey") val posXKey: Int = 8,
     @SerializedName("posYKey") val posYKey: Int = 9
@@ -52,12 +47,9 @@ data class CoordinatePlanB(
     @SerializedName("maxValid") val maxValid: Double = 32768.0
 )
 
-/**
- * Complete ID map configuration
- */
 data class IdMapConfig(
-    @SerializedName("version") val version: String = "",
-    @SerializedName("common") val common: ParamKeys = ParamKeys(),
+    @SerializedName("version") val version: String = "default",
+    @SerializedName("common") val common: CommonKeys = CommonKeys(),
     @SerializedName("harvestable") val harvestable: HarvestableKeys = HarvestableKeys(),
     @SerializedName("mob") val mob: MobKeys = MobKeys(),
     @SerializedName("player") val player: PlayerKeys = PlayerKeys(),
@@ -65,13 +57,10 @@ data class IdMapConfig(
     @SerializedName("coordinatePlanB") val coordinatePlanB: CoordinatePlanB = CoordinatePlanB()
 )
 
-/**
- * Repository for loading and caching id_map.json
- * Contains all entity classification logic based on deep analysis of ao-bin-dumps
- */
 class IdMapRepository private constructor() {
     
     companion object {
+        private const val TAG = "IdMapRepository"
         private const val ID_MAP_FILE = "id_map.json"
         
         @Volatile
@@ -79,7 +68,13 @@ class IdMapRepository private constructor() {
         
         fun getInstance(): IdMapRepository {
             return instance ?: synchronized(this) {
-                instance ?: IdMapRepository().also { instance = it }
+                instance ?: IdMapRepository().also { 
+                    instance = it
+                    if (!it.isInitialized()) {
+                        it.config = IdMapConfig()
+                        Log.i(TAG, "Auto-initialized with defaults")
+                    }
+                }
             }
         }
     }
@@ -87,260 +82,186 @@ class IdMapRepository private constructor() {
     private var config: IdMapConfig? = null
     private val gson = Gson()
     
-    /**
-     * Initialize from assets
-     */
     fun initialize(context: Context): Boolean {
         return try {
-            val json = loadAsset(context.assets, ID_MAP_FILE)
-            parseConfig(json)
+            val json = context.assets.open(ID_MAP_FILE).bufferedReader().use { it.readText() }
+            config = gson.fromJson(json, IdMapConfig::class.java)
+            Log.i(TAG, "Loaded config: version=${config?.version}")
+            true
         } catch (e: Exception) {
-            // Use defaults if file not found
+            Log.w(TAG, "Using defaults: ${e.message}")
             config = IdMapConfig()
             true
         }
     }
     
-    /**
-     * Initialize with JSON string directly
-     */
-    fun initializeFromJson(json: String): Boolean {
-        return try {
-            parseConfig(json)
-        } catch (e: Exception) {
-            config = IdMapConfig()
-            false
-        }
-    }
-    
-    private fun loadAsset(assets: AssetManager, filename: String): String {
-        val inputStream = assets.open(filename)
-        val reader = BufferedReader(InputStreamReader(inputStream))
-        return reader.use { it.readText() }
-    }
-    
-    private fun parseConfig(json: String): Boolean {
-        config = gson.fromJson(json, IdMapConfig::class.java)
-        return true
-    }
-    
-    // ===== Getters for param keys =====
-    
-    fun getCommonKeys(): ParamKeys = config?.common ?: ParamKeys()
+    fun getCommonKeys(): CommonKeys = config?.common ?: CommonKeys()
     fun getHarvestableKeys(): HarvestableKeys = config?.harvestable ?: HarvestableKeys()
     fun getMobKeys(): MobKeys = config?.mob ?: MobKeys()
     fun getPlayerKeys(): PlayerKeys = config?.player ?: PlayerKeys()
     fun getJoinFinishedKeys(): JoinFinishedKeys = config?.joinFinished ?: JoinFinishedKeys()
     fun getCoordinatePlanB(): CoordinatePlanB = config?.coordinatePlanB ?: CoordinatePlanB()
     
-    // ===== Tier and Enchantment Extraction =====
+    fun getVersion(): String = config?.version ?: "unknown"
+    fun isInitialized(): Boolean = config != null
     
-    /**
-     * Extract tier from type name (e.g., "T4_FIBER" -> 4)
-     */
     fun extractTier(typeName: String?): Int {
         if (typeName.isNullOrEmpty()) return 0
-        
-        // Match patterns like T4_, T8_, etc.
         val match = Regex("T([1-8])_").find(typeName)
         return match?.groupValues?.get(1)?.toIntOrNull() ?: 0
     }
     
-    /**
-     * Extract enchantment from type name (e.g., "T4_FIBER@2" -> RARE)
-     */
     fun extractEnchantment(typeName: String?): Enchantment {
         if (typeName.isNullOrEmpty()) return Enchantment.NONE
-        
-        // Match patterns like @1, @2, @3, @4 at end of string
         val match = Regex("@([1-4])$").find(typeName)
         val level = match?.groupValues?.get(1)?.toIntOrNull() ?: 0
         return Enchantment.fromInt(level)
     }
     
-    // ===== Entity Classification =====
-    
-    /**
-     * Classify entity type from type name string
-     * Based on analysis of 3,756 unique mob IDs from ao-bin-dumps
-     */
     fun classifyEntity(typeName: String?): EntityType {
         if (typeName.isNullOrEmpty()) return EntityType.UNKNOWN
-        
         val upper = typeName.uppercase()
         
-        // === RESOURCES ===
-        if (upper.contains("FIBER") || upper.contains("COTTON") || 
-            upper.contains("HEMP") || upper.contains("FLAX") || 
-            upper.contains("SILK") || upper.contains("SPONGE")) {
+        // Resources
+        if (upper.contains("FIBER") || upper.contains("COTTON") || upper.contains("HEMP") || 
+            upper.contains("FLAX") || upper.contains("SILK") || upper.contains("SPONGE")) 
             return EntityType.RESOURCE_FIBER
-        }
-        
-        if (upper.contains("_ORE") || upper.contains("IRON") || 
-            upper.contains("STEEL") || upper.contains("TITANIUM") || 
-            upper.contains("RUNITE") || upper.contains("METEORITE") ||
-            upper.contains("COPPER") || upper.contains("TIN")) {
+            
+        if (upper.contains("_ORE") || upper.contains("IRONNODE") || upper.contains("STEELNODE") || 
+            upper.contains("TITANIUMNODE") || upper.contains("RUNITENODE") || 
+            upper.contains("METEORITENODE") || upper.contains("ORE_MOUNTAIN")) 
             return EntityType.RESOURCE_ORE
-        }
-        
-        if (upper.contains("_WOOD") || upper.contains("LOG") || 
-            upper.contains("BIRCH") || upper.contains("OAK") || 
-            upper.contains("CEDAR") || upper.contains("PINE") || 
-            upper.contains("FROSTWOOD")) {
+            
+        if (upper.contains("_WOOD") || upper.contains("LOG") || upper.contains("BIRCH") || 
+            upper.contains("OAK") || upper.contains("CEDAR") || upper.contains("PINE") ||
+            upper.contains("FROSTWOOD") || upper.contains("ASH") || upper.contains("MAPLE") ||
+            upper.contains("ELM") || upper.contains("WYCH")) 
             return EntityType.RESOURCE_LOGS
-        }
-        
-        if (upper.contains("_ROCK") || upper.contains("_STONE") || 
-            upper.contains("LIMESTONE") || upper.contains("SANDSTONE") || 
-            upper.contains("TRAVERTINE") || upper.contains("GRANITE") ||
-            upper.contains("SLATE") || upper.contains("BASALT")) {
+            
+        if (upper.contains("_ROCK") || upper.contains("_STONE") || upper.contains("LIMESTONE") || 
+            upper.contains("GRANITE") || upper.contains("SANDSTONE") || upper.contains("TRAVERTINE") ||
+            upper.contains("MARBLE") || upper.contains("BASALT") || upper.contains("SLATE")) 
             return EntityType.RESOURCE_ROCK
-        }
-        
-        if (upper.contains("_HIDE") && !upper.contains("MOB_")) {
+            
+        if ((upper.contains("_HIDE") || upper.contains("HIDE_")) && 
+            !upper.contains("MOB_") && !upper.contains("_MOB")) 
             return EntityType.RESOURCE_HIDE
-        }
         
-        // === CRYSTAL MOBS (Outlands Black Zones) ===
-        if (upper.contains("CRYSTALSPIDER") || upper.contains("CRYSTAL_SPIDER")) {
+        // Crystal mobs
+        if (upper.contains("CRYSTALSPIDER") || upper.contains("CRYSTAL_SPIDER")) 
             return EntityType.CRYSTAL_SPIDER
-        }
-        if (upper.contains("CRYSTALCOBRA") || upper.contains("CRYSTAL_COBRA")) {
+        if (upper.contains("CRYSTALCOBRA") || upper.contains("CRYSTAL_COBRA")) 
             return EntityType.CRYSTAL_COBRA
-        }
-        if (upper.contains("CRYSTALBEETLE") || upper.contains("CRYSTAL_BEETLE")) {
+        if (upper.contains("CRYSTALBEETLE") || upper.contains("CRYSTAL_BEETLE")) 
             return EntityType.CRYSTAL_BEETLE
-        }
-        if (upper.contains("ARCANE_ELEMENTAL")) {
+        if (upper.contains("ARCANE_ELEMENTAL") || upper.contains("ARCANEELEMENTAL")) 
             return EntityType.ARCANE_ELEMENTAL
-        }
         
-        // === MIST BOSSES (Only in Uncommon+ Mists) ===
-        if (upper.contains("MISTS_GRIFFIN") || upper.contains("GRIFFIN")) {
+        // Mist bosses
+        if (upper.contains("GRIFFIN") || upper.contains("GRYPHON")) 
             return EntityType.MIST_BOSS_GRIFFIN
-        }
-        if (upper.contains("MISTS_FAIRYDRAGON") || upper.contains("FAIRYDRAGON") || 
-            upper.contains("FEY_DRAGON")) {
+        if (upper.contains("FAIRYDRAGON") || upper.contains("FEY_DRAGON") || 
+            upper.contains("FAIRY_DRAGON")) 
             return EntityType.MIST_BOSS_FEY_DRAGON
-        }
-        if (upper.contains("VEILWEAVER") || upper.contains("VEIL_WEAVER")) {
+        if (upper.contains("VEILWEAVER")) 
             return EntityType.MIST_BOSS_VEILWEAVER
-        }
         
-        // === MIST ENTITIES ===
-        if (upper.contains("MISTS_WISP") || upper.contains("MIST_WISP")) {
+        // Mist entities
+        if (upper.contains("MISTS_WISP") || upper.contains("MIST_WISP") || 
+            upper.contains("WISP_SMALL")) 
             return EntityType.MIST_WISP
-        }
-        if (upper.contains("CAGEDWISP") || upper.contains("CAGED_WISP")) {
+        if (upper.contains("CAGEDWISP") || upper.contains("CAGED_WISP") || 
+            upper.contains("WISP_CAGED")) 
             return EntityType.CAGED_WISP
-        }
-        if (upper.contains("TURBULENT_MIST")) {
+        if (upper.contains("TURBULENT_WISP") || upper.contains("TURBULENTWISP")) 
             return EntityType.TURBULENT_WISP
-        }
-        if (upper.contains("_MISTS_") || upper.contains("_MIST_")) {
+        if (upper.contains("_MISTS_") || upper.contains("_MIST_") || upper.contains("MIST_MOB")) 
             return EntityType.MIST_MOB
-        }
         
-        // === AVALONIAN ENTITIES ===
-        if (upper.contains("AVALON_DRONE") || upper.contains("AVALONIAN_DRONE") ||
-            upper.contains("TREASURE_MINION")) {
+        // Avalonian
+        if (upper.contains("AVALON_DRONE") || upper.contains("AVALONIAN_DRONE") || 
+            upper.contains("TREASURE_MINION") || upper.contains("TREASUREMINION")) 
             return EntityType.AVALONIAN_DRONE
-        }
-        if (upper.contains("_AVALON_") && !upper.contains("TREASURE")) {
+        if (upper.contains("_AVALON_") || upper.contains("AVALONIAN")) 
             return EntityType.MOB_AVALONIAN
-        }
         
-        // === HIDE ANIMALS (Skinnable) ===
-        if (upper.contains("CRITTER_HIDE") || 
-            (upper.contains("_HIDE_") && upper.contains("MOB"))) {
-            return when {
-                upper.contains("MIST") -> EntityType.HIDE_ANIMAL_MIST
-                upper.contains("ROADS") -> EntityType.HIDE_ANIMAL_ROADS
-                else -> EntityType.HIDE_ANIMAL
-            }
-        }
+        // Hide animals
+        if (upper.contains("CRITTER_HIDE") || upper.contains("HIDE_MOB") || 
+            (upper.contains("_HIDE_") && upper.contains("MOB")) ||
+            upper.contains("SWAMP_DEMON") || upper.contains("DIREBOAR") ||
+            upper.contains("DIREWOLF") || upper.contains("DIRE_BEAR") ||
+            upper.contains("GIANT_STAG") || upper.contains("MOOSE") ||
+            upper.contains("CROCODILE") || upper.contains("ALLIGATOR")) 
+            return EntityType.HIDE_ANIMAL
         
-        // === FACTION MOBS ===
-        when {
-            upper.contains("_HERETIC_") -> return EntityType.MOB_HERETIC
-            upper.contains("_MORGANA_") -> return EntityType.MOB_MORGANA
-            upper.contains("_KEEPER_") -> return EntityType.MOB_KEEPER
-            upper.contains("_UNDEAD_") -> return EntityType.MOB_UNDEAD
-            upper.contains("_DEMON_") -> return EntityType.MOB_DEMON
-        }
+        // Faction mobs
+        if (upper.contains("_HERETIC_") || upper.contains("HERETIC")) 
+            return EntityType.MOB_HERETIC
+        if (upper.contains("_MORGANA_") || upper.contains("MORGANA")) 
+            return EntityType.MOB_MORGANA
+        if (upper.contains("_KEEPER_") || upper.contains("KEEPER")) 
+            return EntityType.MOB_KEEPER
+        if (upper.contains("_UNDEAD_") || upper.contains("UNDEAD")) 
+            return EntityType.MOB_UNDEAD
+        if (upper.contains("_DEMON_") || upper.contains("DEMON")) 
+            return EntityType.MOB_DEMON
         
-        // === RESOURCE GUARDIANS ===
-        if (upper.contains("GUARDIAN_") || upper.contains("CRITTER_FIBER") ||
-            upper.contains("CRITTER_ORE") || upper.contains("CRITTER_ROCK") ||
-            upper.contains("CRITTER_WOOD")) {
+        // Resource guardians
+        if (upper.contains("GUARDIAN_") || upper.contains("CRITTER_FIBER") || 
+            upper.contains("CRITTER_ORE") || upper.contains("CRITTER_ROCK") || 
+            upper.contains("CRITTER_WOOD")) 
             return EntityType.RESOURCE_GUARDIAN
-        }
         
-        // === BOSS MOBS ===
-        when {
-            upper.contains("_VETERAN_BOSS") -> return EntityType.VETERAN_BOSS
-            upper.contains("_MINIBOSS") -> return EntityType.MINIBOSS
-            upper.contains("_BOSS") -> return EntityType.BOSS
-            upper.contains("_ELITE") -> return EntityType.ELITE_MOB
-        }
+        // Bosses
+        if (upper.contains("_VETERAN_BOSS") || upper.contains("VETERAN_BOSS")) 
+            return EntityType.VETERAN_BOSS
+        if (upper.contains("_MINIBOSS") || upper.contains("MINIBOSS")) 
+            return EntityType.MINIBOSS
+        if (upper.contains("_BOSS") && !upper.contains("VETERAN")) 
+            return EntityType.BOSS
+        if (upper.contains("_ELITE") || upper.contains("ELITE")) 
+            return EntityType.ELITE_MOB
         
-        // === SPECIAL ENTITIES ===
-        if (upper.contains("TREASURE_CHEST") || upper.contains("LOOT_CHEST")) {
+        // Special
+        if (upper.contains("TREASURE_CHEST") || upper.contains("LOOT_CHEST") || 
+            upper.contains("LOCKEDCHEST")) 
             return EntityType.TREASURE_CHEST
-        }
-        if (upper.contains("DUNGEON_PORTAL") || upper.contains("DUNGEON_EXIT")) {
+        if (upper.contains("DUNGEON_PORTAL") || upper.contains("DUNGEON_EXIT") ||
+            upper.contains("DUNGEONPORTAL") || upper.contains("EXPEDITION_EXIT")) 
             return EntityType.DUNGEON_PORTAL
-        }
-        if (upper.contains("HELLGATE")) return EntityType.HELLGATE
-        if (upper.contains("POWERCRYSTAL")) return EntityType.POWER_CRYSTAL
-        if (upper.contains("SILVER")) return EntityType.SILVER
+        if (upper.contains("HELLGATE") || upper.contains("HELLGATE_EXIT")) 
+            return EntityType.HELLGATE
+        if (upper.contains("POWERCRYSTAL") || upper.contains("POWER_CRYSTAL")) 
+            return EntityType.POWER_CRYSTAL
+        if (upper.contains("SILVER") || upper.contains("SILVERPILE")) 
+            return EntityType.SILVER
         
         return EntityType.UNKNOWN
     }
     
-    /**
-     * Determine mob category from type name
-     */
     fun getMobCategory(typeName: String?): MobCategory {
         if (typeName.isNullOrEmpty()) return MobCategory.OTHER
-        
         val upper = typeName.uppercase()
         
         return when {
-            upper.contains("GUARDIAN_") || 
-            upper.contains("CRITTER_FIBER") || 
-            upper.contains("CRITTER_ORE") || 
-            upper.contains("CRITTER_ROCK") || 
+            upper.contains("GUARDIAN_") || upper.contains("CRITTER_FIBER") || 
+            upper.contains("CRITTER_ORE") || upper.contains("CRITTER_ROCK") || 
             upper.contains("CRITTER_WOOD") -> MobCategory.HARVESTABLE
             
-            upper.contains("CRITTER_HIDE") || 
-            (upper.contains("_HIDE_") && upper.contains("MOB")) -> MobCategory.SKINNABLE
+            upper.contains("CRITTER_HIDE") || (upper.contains("_HIDE_") && upper.contains("MOB")) -> MobCategory.SKINNABLE
             
-            upper.contains("CRYSTALSPIDER") ||
-            upper.contains("CRYSTALCOBRA") ||
+            upper.contains("CRYSTALSPIDER") || upper.contains("CRYSTALCOBRA") || 
             upper.contains("CRYSTALBEETLE") -> MobCategory.CRYSTAL
             
-            upper.contains("_AVALON_") -> MobCategory.AVALONIAN
+            upper.contains("_AVALON_") || upper.contains("AVALONIAN") -> MobCategory.AVALONIAN
             
-            upper.contains("GRIFFIN") ||
-            upper.contains("FAIRYDRAGON") ||
+            upper.contains("GRIFFIN") || upper.contains("FAIRYDRAGON") || 
             upper.contains("VEILWEAVER") -> MobCategory.MIST_BOSS
             
-            upper.contains("_BOSS") || 
-            upper.contains("_MINIBOSS") ||
+            upper.contains("_BOSS") || upper.contains("_MINIBOSS") || 
             upper.contains("_VETERAN_BOSS") -> MobCategory.BOSS
             
-            else -> MobCategory.OTHER
+            else -> MobCategory.ENEMY
         }
     }
-    
-    /**
-     * Get version string
-     */
-    fun getVersion(): String = config?.version ?: "unknown"
-    
-    /**
-     * Check if initialized
-     */
-    fun isInitialized(): Boolean = config != null
 }
