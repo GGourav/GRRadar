@@ -5,9 +5,6 @@ import com.grradar.logger.DiscoveryLogger
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-/**
- * Photon Protocol 16 Parser for Albion Online
- */
 class PhotonParser(private val callback: PhotonCallback) {
     
     companion object {
@@ -49,7 +46,6 @@ class PhotonParser(private val callback: PhotonCallback) {
             val buffer = ByteBuffer.wrap(payload)
             buffer.order(ByteOrder.BIG_ENDIAN)
             
-            // Parse Photon header
             val peerId = buffer.short.toInt() and 0xFFFF
             val flags = buffer.get().toInt() and 0xFF
             val cmdCount = buffer.get().toInt() and 0xFF
@@ -64,7 +60,6 @@ class PhotonParser(private val callback: PhotonCallback) {
                 return true
             }
             
-            // Parse each command
             var parsedAny = false
             for (i in 0 until cmdCount) {
                 if (buffer.remaining() < 12) {
@@ -89,9 +84,9 @@ class PhotonParser(private val callback: PhotonCallback) {
         val cmdType = buffer.get().toInt() and 0xFF
         val channelId = buffer.get().toInt() and 0xFF
         val cmdFlags = buffer.get().toInt() and 0xFF
-        buffer.get() // reserved
+        buffer.get()
         val cmdLength = buffer.int
-        buffer.int // reliableSeq
+        buffer.int()
         
         val startPos = buffer.position()
         val payloadLength = cmdLength - 12
@@ -142,7 +137,7 @@ class PhotonParser(private val callback: PhotonCallback) {
         val buffer = ByteBuffer.wrap(payload)
         buffer.order(ByteOrder.BIG_ENDIAN)
         
-        buffer.get() // Skip message type (0x04)
+        buffer.get()
         val eventCode = buffer.get().toInt() and 0xFF
         val paramCount = buffer.short.toInt() and 0xFFFF
         
@@ -176,13 +171,11 @@ class PhotonParser(private val callback: PhotonCallback) {
     }
     
     private fun getEventName(eventCode: Int, params: Map<Int, Any?>): String {
-        // Try to get name from param 252 (0xFC) - Albion uses this for actual event name
         val nameParam = params[252]
         if (nameParam is String && nameParam.isNotEmpty()) {
             return nameParam
         }
         
-        // Fallback to event code mapping
         return when (eventCode) {
             1 -> "JoinFinished"
             2 -> "NewCharacter"
@@ -262,7 +255,7 @@ class PhotonParser(private val callback: PhotonCallback) {
     private fun readArray(buffer: ByteBuffer): Array<Any?> {
         if (buffer.remaining() < 3) return arrayOfNulls(0)
         val length = buffer.short.toInt() and 0xFFFF
-        buffer.get() // elementType
+        buffer.get()
         if (length <= 0) return arrayOfNulls(0)
         return Array(length) { readValue(buffer) }
     }
@@ -278,8 +271,8 @@ class PhotonParser(private val callback: PhotonCallback) {
     
     private fun readDictionary(buffer: ByteBuffer): Map<Any?, Any?> {
         if (buffer.remaining() < 4) return emptyMap()
-        buffer.get() // keyType
-        buffer.get() // valueType
+        buffer.get()
+        buffer.get()
         val count = buffer.short.toInt() and 0xFFFF
         if (count == 0) return emptyMap()
         val map = HashMap<Any?, Any?>(count)
@@ -293,8 +286,6 @@ class PhotonParser(private val callback: PhotonCallback) {
         if (length <= 0) return arrayOfNulls(0)
         return Array(length) { readValue(buffer) }
     }
-    
-    // ===== Helper methods for EventDispatcher =====
     
     fun getInt(params: Map<Int, Any?>, key: Int, default: Int = 0): Int {
         return when (val v = params[key]) {
@@ -356,7 +347,10 @@ class PhotonParser(private val callback: PhotonCallback) {
         for (v in params.values) {
             when (v) {
                 is Float -> if (v in minValid..maxValid && v != 0f) floats.add(v)
-                is Double -> { val f = v.toFloat(); if (f in minValid..maxValid && f != 0f) floats.add(f) }
+                is Double -> { 
+                    val f = v.toFloat()
+                    if (f in minValid..maxValid && f != 0f) floats.add(f) 
+                }
             }
         }
         return if (floats.size >= 2) Pair(floats[0], floats[1]) else null
